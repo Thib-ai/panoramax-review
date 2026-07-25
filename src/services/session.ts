@@ -26,7 +26,8 @@ export interface BootUser {
 
 export async function bootstrapSession(): Promise<BootUser | null> {
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+    const res = await fetch(`${base}/api/auth/me`, { credentials: 'same-origin' });
     if (!res.ok) return null;
     const data = await res.json();
     if (data.token) setToken(data.token);

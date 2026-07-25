@@ -66,7 +66,7 @@ class CacheManager {
     }
 
     try {
-      const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
+      const proxyUrl = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/proxy-image?url=${encodeURIComponent(url)}`;
       const response = await fetch(proxyUrl);
       if (response.ok) {
         const cache = await caches.open(CACHE_NAME);
