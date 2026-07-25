@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Smoke test - start server and verify API
+        run: |
+          npm run build
+          # Use NODE_ENV=development so the dev auth shim auto-logs in as devuser
+          NODE_ENV=development DATA_DIR=./test-data node dist/server.cjs &
+          SERVER_PID=$!
+          sleep 2
+          # Auth bootstrap (dev shim)
+          RESPONSE=$(curl -s http://localhost:3000/api/auth/me)
+          echo "Auth response: $RESPONSE"
+          TOKEN=$(echo $RESPONSE | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+          if [ -z "$TOKEN" ]; then echo "FAIL: No token"; exit 1; fi
+
+          # Get settings
+          curl -s http://localhost:3000/api/settings | grep -q 'cacheSize' || { echo "FAIL: settings"; exit 1; }
+
+          # Import a test picture
+          curl -s -X POST http://localhost:3000/api/pictures/import \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d '{"pictureIds":["5b29337b-9f93-4a69-89b2-3e28edcdb66b"]}' | grep -q '"added":1' || { echo "FAIL: import"; exit 1; }
+
+          # Get next picture
+          curl -s http://localhost:3000/api/pictures/next -H "Authorization: Bearer $TOKEN" | grep -q 'pictureId' || { echo "FAIL: next"; exit 1; }
+
+          # Submit a review
+          curl -s -X POST http://localhost:3000/api/reviews \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d '{"pictureId":"5b29337b-9f93-4a69-89b2-3e28edcdb66b","status":"ok"}' | grep -q '"success":true' || { echo "FAIL: review"; exit 1; }
+
+          # Get stats
+          curl -s http://localhost:3000/api/stats -H "Authorization: Bearer $TOKEN" | grep -q 'totalPictures' || { echo "FAIL: stats"; exit 1; }
+
+          # Export
+          curl -s "http://localhost:3000/api/export?format=json" -H "Authorization: Bearer $TOKEN" | grep -q 'exportedAt' || { echo "FAIL: export"; exit 1; }
+
+          # Done
+          kill $SERVER_PID 2>/dev/null || true
+          rm -rf ./test-data
+          echo "All smoke tests passed!"

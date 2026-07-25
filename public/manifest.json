@@ -1,0 +1,25 @@
+{
+  "short_name": "Panoramax",
+  "name": "Panoramax Image Reviewer",
+  "description": "Mobile-friendly application to review, flag, and cache Panoramax street-level imagery with offline capabilities.",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "categories": ["utilities", "productivity", "photo"]
+}
