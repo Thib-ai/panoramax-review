@@ -47,6 +47,22 @@ export default function App() {
   const userRef = useRef(user);
   userRef.current = user;
 
+  // Ring buffer of recently-shown picture IDs, passed to /api/pictures/queue
+  // so refills don't re-show images we just saw (skip / review both count).
+  const recentIdsRef = useRef<Set<string>>(new Set());
+  const RECENT_LIMIT = 200;
+  const trackRecent = useCallback((pic: PictureItem | null) => {
+    if (!pic) return;
+    const set = recentIdsRef.current;
+    set.add(pic.pictureId);
+    if (set.size > RECENT_LIMIT) {
+      // Drop oldest by iterating and removing until back under limit.
+      // Set preserves insertion order, so first entries are oldest.
+      const it = set.values();
+      while (set.size > RECENT_LIMIT) set.delete(it.next().value!);
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       const bootUser = await bootstrapSession();
@@ -103,7 +119,7 @@ export default function App() {
       const [s, st, q] = await Promise.all([
         fetchAppStats(),
         fetchAppSettings(),
-        fetchPictureQueue(settings.cacheSize, instance),
+        fetchPictureQueue(settings.cacheSize, instance, Array.from(recentIdsRef.current)),
       ]);
       setStats(s);
       setSettings(st);
@@ -111,6 +127,7 @@ export default function App() {
       if (q.queue.length > 0) {
         setCurrentPicture(q.queue[0]);
         setQueue(q.queue.slice(1));
+        trackRecent(q.queue[0]);
       }
       cacheManager.setCellularSaver(st.cellularSaverMode || false);
       cacheManager.prefetchPictures(q.queue, st.cacheSize);
@@ -130,15 +147,17 @@ export default function App() {
       const next = q[0];
       setCurrentPicture(next);
       setQueue(q.slice(1));
+      trackRecent(next);
       cacheManager.prefetchPictures(q.slice(1), settings.cacheSize);
     } else {
       setLoadingPicture(true);
       try {
         const instance = settings.activeInstance || undefined;
-        const result = await fetchPictureQueue(settings.cacheSize, instance);
+        const result = await fetchPictureQueue(settings.cacheSize, instance, Array.from(recentIdsRef.current));
         if (result.queue.length > 0) {
           setCurrentPicture(result.queue[0]);
           setQueue(result.queue.slice(1));
+          trackRecent(result.queue[0]);
           cacheManager.prefetchPictures(result.queue, settings.cacheSize);
           cachePictureQueue(result.queue);
         } else {

@@ -201,7 +201,7 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
 
       {upcomingPictures.length > 0 && (
         <div className="absolute top-0 left-0 w-px h-px opacity-0 pointer-events-none overflow-hidden -z-50" aria-hidden="true">
-          {upcomingPictures.map((pic) => (
+          {upcomingPictures.slice(0, 1).map((pic) => (
             <img key={pic.id} src={pic.sdUrl} decoding="async" alt="" style={{ position: 'absolute', width: '1px', height: '1px', top: '-999px', left: '-999px' }} />
           ))}
         </div>

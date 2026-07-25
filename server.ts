@@ -347,6 +347,13 @@ app.get('/api/pictures/queue', wrap((req, res) => {
   const effectiveLimit = Math.min(limit || cacheSize, 500);
   const userId = req._user!.id;
 
+  // Optional client-supplied list of recently-shown picture_ids to exclude
+  // from the next random sample (prevents immediate repeats on queue refill).
+  const excludeRaw = req.query.exclude as string | undefined;
+  const excludeIds = excludeRaw
+    ? Array.from(new Set(excludeRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)))
+    : [];
+
   const totalRow = stmts.countPictures.get() as Row;
   const totalPictures = totalRow.count as number;
 
@@ -364,6 +371,11 @@ app.get('/api/pictures/queue', wrap((req, res) => {
       sql += ' AND instance_url = ?';
       params.push(instance);
     }
+    if (excludeIds.length > 0) {
+      const placeholders = excludeIds.map(() => '?').join(',');
+      sql += ` AND picture_id NOT IN (${placeholders})`;
+      params.push(...excludeIds);
+    }
     sql += ' ORDER BY RANDOM() LIMIT ?';
     params.push(effectiveLimit);
     const rows = sqlite.prepare(sql).all(...params) as Row[];
@@ -371,10 +383,17 @@ app.get('/api/pictures/queue', wrap((req, res) => {
   } else {
     let sql = 'SELECT * FROM pictures';
     const params: unknown[] = [];
+    const where: string[] = [];
     if (instance) {
-      sql += ' WHERE instance_url = ?';
+      where.push('instance_url = ?');
       params.push(instance);
     }
+    if (excludeIds.length > 0) {
+      const placeholders = excludeIds.map(() => '?').join(',');
+      where.push(`picture_id NOT IN (${placeholders})`);
+      params.push(...excludeIds);
+    }
+    if (where.length > 0) sql += ` WHERE ${where.join(' AND ')}`;
     sql += ' ORDER BY RANDOM() LIMIT ?';
     params.push(effectiveLimit);
     const rows = sqlite.prepare(sql).all(...params) as Row[];

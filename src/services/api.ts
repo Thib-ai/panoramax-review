@@ -36,9 +36,10 @@ export async function logoutUser(): Promise<void> {
   clearToken();
 }
 
-export async function fetchPictureQueue(limit = 10, instance?: string): Promise<{ queue: PictureItem[]; totalPending: number; totalPictures: number; cacheSize: number }> {
+export async function fetchPictureQueue(limit = 10, instance?: string, excludeIds: string[] = []): Promise<{ queue: PictureItem[]; totalPending: number; totalPictures: number; cacheSize: number }> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (instance) params.set('instance', instance);
+  if (excludeIds.length > 0) params.set('exclude', excludeIds.join(','));
   return apiFetch(`/api/pictures/queue?${params.toString()}`);
 }
 
