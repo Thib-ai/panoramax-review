@@ -181,7 +181,7 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
           <span className="font-mono font-semibold truncate text-slate-100 max-w-[90px] sm:max-w-[180px]">
             {picture.pictureId.substring(0, 10)}...
           </span>
-          <a href={`${picture.instanceUrl}/pictures/${picture.pictureId}`} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white p-0.5">
+          <a href={`${picture.instanceUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')}/?focus=pic&pic=${picture.pictureId}`} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white p-0.5">
             <ExternalLink className="w-3 h-3" />
           </a>
         </div>
