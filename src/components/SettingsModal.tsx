@@ -30,7 +30,6 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
       setCellularSaver(settings.cellularSaverMode || false);
       setNewInstanceUrl('');
       setMessage('');
-      cacheManager.getCachedCount().then((c) => setCachedCount(c));
       const conn = (navigator as any).connection;
       if (conn) {
         const isCell = conn.type === 'cellular' || conn.saveData || ['2g', '3g'].includes(conn.effectiveType);
@@ -38,6 +37,23 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
       }
     }
   }, [isOpen, settings]);
+
+  // Live-update the cached-count badge as prefetches land (also fires immediately
+  // with the current count, replacing the old one-shot cacheManager.getCachedCount()).
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsubscribe = cacheManager.subscribe((count) => setCachedCount(count));
+    return unsubscribe;
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, onClose]);
 
   const addInstance = () => {
     const url = newInstanceUrl.replace(/\/$/, '').trim();
@@ -87,8 +103,6 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
           const { queue } = await fetchPictureQueue(clamped, instance);
           if (queue.length > 0) {
             cacheManager.prefetchPictures(queue, clamped);
-            const after = await cacheManager.getCachedCount();
-            setCachedCount(after);
           }
         } catch {
           // Prefetch is best-effort; don't surface failures in the settings modal.
@@ -110,8 +124,14 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-fade-in font-sans">
-      <div className="w-full max-w-lg bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-xl space-y-5 text-slate-900 max-h-[90vh] overflow-y-auto">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-fade-in font-sans"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-xl space-y-5 text-slate-900 max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="p-2.5 bg-slate-100 text-slate-800 rounded-xl border border-slate-200/80">

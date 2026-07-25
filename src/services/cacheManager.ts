@@ -6,6 +6,7 @@ class CacheManager {
   private cachedUrls: Set<string> = new Set();
   private cellularSaverActive = false;
   private initPromise: Promise<void> | null = null;
+  private listeners: Set<(count: number) => void> = new Set();
 
   private async ensureInit() {
     if (!this.initPromise) {
@@ -24,6 +25,19 @@ class CacheManager {
     } catch {
       // Cache API not available
     }
+    this.notify();
+  }
+
+  private notify() {
+    const count = this.cachedUrls.size;
+    this.listeners.forEach((l) => l(count));
+  }
+
+  subscribe(listener: (count: number) => void): () => void {
+    this.listeners.add(listener);
+    // Immediately push current count so the subscriber doesn't need a separate fetch.
+    listener(this.cachedUrls.size);
+    return () => this.listeners.delete(listener);
   }
 
   async prefetchPictures(pictures: PictureItem[], maxCount = 10): Promise<number> {
@@ -59,6 +73,7 @@ class CacheManager {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(url, response.clone());
         this.cachedUrls.add(url);
+        this.notify();
         return true;
       }
     } catch {
@@ -72,6 +87,7 @@ class CacheManager {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(proxyUrl, response.clone());
         this.cachedUrls.add(url);
+        this.notify();
         return true;
       }
     } catch {
@@ -93,6 +109,7 @@ class CacheManager {
     try {
       await caches.delete(CACHE_NAME);
       this.cachedUrls.clear();
+      this.notify();
     } catch {
       // not available
     }
