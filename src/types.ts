@@ -97,6 +97,7 @@ export interface UndoItem {
   pictureId: string;
   label: string;
   createdAt: number;
+  picture: PictureItem;
 }
 
 export interface DashboardFilterParams {

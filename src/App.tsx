@@ -186,6 +186,7 @@ export default function App() {
         pictureId: currentPicture.pictureId,
         label: 'OK',
         createdAt: Date.now(),
+        picture: currentPicture,
       };
       setUndoStack((prev) => [undoItem, ...prev].slice(0, 3));
     } finally {
@@ -209,6 +210,7 @@ export default function App() {
         pictureId: currentPicture.pictureId,
         label: `Flag: ${reasonId}`,
         createdAt: Date.now(),
+        picture: currentPicture,
       };
       setUndoStack((prev) => [undoItem, ...prev].slice(0, 3));
     } finally {
@@ -222,11 +224,15 @@ export default function App() {
     try {
       await undoPictureReview(item.reviewId, item.pictureId);
       setUndoStack((prev) => prev.filter((u) => u.id !== item.id));
+      if (currentPicture?.pictureId !== item.pictureId) {
+        setQueue((prev) => (currentPicture ? [currentPicture, ...prev] : prev));
+      }
+      setCurrentPicture(item.picture);
       loadStats();
     } finally {
       setIsUndoLoading(false);
     }
-  }, [loadStats]);
+  }, [loadStats, currentPicture]);
 
   const handleLogout = useCallback(async () => {
     await logoutUser();
