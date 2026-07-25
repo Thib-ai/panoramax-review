@@ -23,7 +23,6 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
   const containerRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
-  const lastPinchDist = useRef(0);
   const imgRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -46,7 +45,7 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
     }
   }, [displayUrl, picture]);
 
-  const zoomAt = useCallback((newScale: number, cx = 0, cy = 0) => {
+  const zoomAt = useCallback((newScale: number, _cx = 0, _cy = 0) => {
     const clamped = Math.max(1, Math.min(newScale, 8));
     setScale(clamped);
     if (clamped === 1) setPosition({ x: 0, y: 0 });
@@ -73,47 +72,13 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
     isDragging.current = false;
   }, []);
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      lastPinchDist.current = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY,
-      );
-    } else if (e.touches.length === 1 && scale > 1) {
-      isDragging.current = true;
-      dragStart.current = { x: e.touches[0].clientX - position.x, y: e.touches[0].clientY - position.y };
-    }
-  }, [scale, position]);
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length === 2) {
-      e.preventDefault();
-      const dist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY,
-      );
-      if (lastPinchDist.current > 0) {
-        const factor = dist / lastPinchDist.current;
-        zoomAt(scale * factor);
-      }
-      lastPinchDist.current = dist;
-    } else if (e.touches.length === 1 && isDragging.current) {
-      setPosition({ x: e.touches[0].clientX - dragStart.current.x, y: e.touches[0].clientY - dragStart.current.y });
-    }
-  }, [scale, zoomAt]);
-
-  const handleTouchEnd = useCallback(() => {
-    isDragging.current = false;
-    lastPinchDist.current = 0;
-  }, []);
-
-  const handleDoubleTap = useCallback(() => {
+  const handleDoubleClick = useCallback(() => {
     zoomAt(scale > 1.5 ? 1 : 2.5);
   }, [scale, zoomAt]);
 
   if (!picture && loading) {
     return (
-      <div className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none touch-none flex items-center justify-center">
+      <div className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none flex items-center justify-center">
         <div className="flex flex-col items-center">
           <div className="w-10 h-10 border-3 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mb-3" />
           <p className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Loading Next Image...</p>
@@ -124,7 +89,7 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
 
   if (!picture) {
     return (
-      <div className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none touch-none flex flex-col items-center justify-center p-6">
+      <div className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none flex flex-col items-center justify-center p-6">
         <CheckCircle2 className="w-12 h-12 text-emerald-400 mb-4" />
         <h2 className="text-lg font-bold text-white mb-2">Queue Completed!</h2>
         <p className="text-xs text-slate-400 mb-4">All pictures have been reviewed.</p>
@@ -146,22 +111,20 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
     <div
       id="image-viewport-container"
       ref={containerRef}
-      className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none touch-none"
+      className="relative flex-1 w-full h-full bg-slate-950 overflow-hidden select-none"
+      style={{ touchAction: 'pinch-zoom' }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
     >
       <div
         className="w-full h-full flex items-center justify-center"
-        onDoubleClick={handleDoubleTap}
+        onDoubleClick={handleDoubleClick}
       >
         <div
-          className="transition-transform duration-75 ease-out flex items-center justify-center w-full h-full p-2 sm:p-4"
+          className="flex items-center justify-center w-full h-full p-2 sm:p-4"
           style={{
             transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale}) rotate(${rotation}deg)`,
           }}
@@ -232,7 +195,7 @@ export default function ImageStage({ picture, upcomingPictures = [], loading, on
 
       {scale === 1 && (
         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none px-2.5 py-0.5 bg-slate-900/80 backdrop-blur-xs rounded-full border border-slate-800 text-[10px] text-slate-400 whitespace-nowrap">
-          Double-tap / Pinch to zoom • Drag to pan
+          Pinch to zoom • Scroll wheel on desktop
         </div>
       )}
 
