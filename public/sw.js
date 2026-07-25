@@ -21,11 +21,13 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
+  const scope = self.registration.scope;
+  const apiBase = new URL('api/', scope).pathname;
 
   const isImage =
     url.pathname.endsWith('.jpg') ||
     url.pathname.endsWith('.png') ||
-    url.pathname.includes('/api/proxy-image') ||
+    url.pathname.includes(`${apiBase}proxy-image`) ||
     url.hostname.includes('panoramax') ||
     event.request.destination === 'image';
 
@@ -51,7 +53,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (url.pathname.startsWith('/api/')) {
+  if (url.pathname.startsWith(apiBase)) {
     event.respondWith(
       fetch(event.request).catch(() => {
         return caches.match(event.request).then((cachedResponse) => {

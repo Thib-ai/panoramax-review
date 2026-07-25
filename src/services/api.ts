@@ -54,7 +54,7 @@ export async function importPictureIds(
   instanceUrl?: string,
   onProgress?: (processed: number, total: number) => void,
 ): Promise<ImportResult> {
-  const batchSize = 30;
+  const batchSize = 200;
   let allAdded = 0;
   let allDuplicates = 0;
   let totalInDb = 0;

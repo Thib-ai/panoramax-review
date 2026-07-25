@@ -429,6 +429,10 @@ app.post('/api/pictures/import', wrap((req, res) => {
     res.status(400).json({ error: 'pictureIds must be an array' });
     return;
   }
+  if (pictureIds.length > 1000) {
+    res.status(400).json({ error: 'pictureIds array too large (max 1000 per request)' });
+    return;
+  }
   const settings = readSettings();
   const baseUrl = (instanceUrl || settings.activeInstance || settings.instances[0] || '').replace(/\/$/, '');
   if (!baseUrl) {
@@ -766,6 +770,10 @@ app.post('/api/pictures/toggle-checkoff', wrap((req, res) => {
     res.status(400).json({ error: 'pictureIds must be an array' });
     return;
   }
+  if (pictureIds.length > 1000) {
+    res.status(400).json({ error: 'pictureIds array too large (max 1000 per request)' });
+    return;
+  }
 
   let updatedCount = 0;
   const doToggle = sqlite.transaction((ids: string[]) => {
@@ -787,6 +795,10 @@ app.post('/api/pictures/delete-batch', wrap((req, res) => {
   const { pictureIds } = req.body as { pictureIds: string[] };
   if (!Array.isArray(pictureIds)) {
     res.status(400).json({ error: 'pictureIds must be an array' });
+    return;
+  }
+  if (pictureIds.length > 1000) {
+    res.status(400).json({ error: 'pictureIds array too large (max 1000 per request)' });
     return;
   }
 
