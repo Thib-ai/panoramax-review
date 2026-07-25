@@ -249,8 +249,8 @@ function getAuthUser(req: Request): { user: User; issuedToken?: string } | null 
   }
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
   const ynhUser = req.headers['ynh-user'] as string | undefined;
-  const remoteUser = ynhUser || req.headers['x-remote-user'] as string | undefined;
-  if (isLocal && typeof remoteUser === 'string' && remoteUser.trim()) {
+  const remoteUser = ynhUser || req.headers['remote-user'] as string | undefined;
+  if (typeof remoteUser === 'string' && remoteUser.trim()) {
     const user = upsertUser(remoteUser.trim());
     const issuedToken = issueSession(user.id);
     req._issuedToken = issuedToken;

@@ -25,7 +25,7 @@ export default function AuthScreen({ error }: AuthScreenProps) {
           </div>
 
           <a
-            href="/yunohost/sso/?r=/"
+            href={`/yunohost/sso/?r=${encodeURIComponent(window.location.pathname)}`}
             className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold rounded-xl border border-slate-700 shadow-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
           >
             <Lock className="w-4 h-4" />

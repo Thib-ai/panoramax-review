@@ -25,7 +25,7 @@ async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, { ...options, headers });
   if (res.status === 401) {
     clearToken();
-    window.location.href = '/yunohost/sso/?r=/';
+    window.location.href = `/yunohost/sso/?r=${encodeURIComponent(window.location.pathname)}`;
     throw new AuthError();
   }
   return res.json() as Promise<T>;
