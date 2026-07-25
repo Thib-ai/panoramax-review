@@ -1,9 +1,9 @@
-export function buildPanoramaxUrls(pictureId: string, instanceUrl?: string): { sdUrl: string; hdUrl: string; thumbUrl: string } {
+export function buildPanoramaxUrls(pictureId: string, instanceUrl: string): { sdUrl: string; hdUrl: string; thumbUrl: string } {
   if (pictureId.startsWith('http://') || pictureId.startsWith('https://')) {
     return { sdUrl: pictureId, hdUrl: pictureId, thumbUrl: pictureId };
   }
   const hex = pictureId.replace(/[^a-f0-9]/gi, '').toLowerCase();
-  const base = (instanceUrl || 'https://panoramax.mapcomplete.org').replace(/\/api\/?$/, '').replace(/\/$/, '');
+  const base = instanceUrl.replace(/\/api\/?$/, '').replace(/\/$/, '');
   if (hex.length >= 32) {
     const p1 = hex.slice(0, 2), p2 = hex.slice(2, 4), p3 = hex.slice(4, 6), p4 = hex.slice(6, 8);
     const rest = pictureId.toLowerCase().replace(/^[a-f0-9]{8}-/, '');
@@ -13,7 +13,7 @@ export function buildPanoramaxUrls(pictureId: string, instanceUrl?: string): { s
       thumbUrl: `${base}/derivatives/${p1}/${p2}/${p3}/${p4}/${rest}/thumb.jpg`,
     };
   }
-  const apiBase = (instanceUrl || 'https://panoramax.mapcomplete.org/api').replace(/\/$/, '');
+  const apiBase = instanceUrl.replace(/\/$/, '');
   return {
     sdUrl: `${apiBase}/pictures/${pictureId}/sd.jpg`,
     hdUrl: `${apiBase}/pictures/${pictureId}/hd.jpg`,

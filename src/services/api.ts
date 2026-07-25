@@ -36,12 +36,17 @@ export async function logoutUser(): Promise<void> {
   clearToken();
 }
 
-export async function fetchPictureQueue(limit = 10): Promise<{ queue: PictureItem[]; totalPending: number; totalPictures: number; cacheSize: number }> {
-  return apiFetch(`/api/pictures/queue?limit=${limit}`);
+export async function fetchPictureQueue(limit = 10, instance?: string): Promise<{ queue: PictureItem[]; totalPending: number; totalPictures: number; cacheSize: number }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (instance) params.set('instance', instance);
+  return apiFetch(`/api/pictures/queue?${params.toString()}`);
 }
 
-export async function fetchNextPicture(): Promise<{ picture: PictureItem | null; queueExhausted: boolean }> {
-  return apiFetch('/api/pictures/next');
+export async function fetchNextPicture(instance?: string): Promise<{ picture: PictureItem | null; queueExhausted: boolean }> {
+  const params = new URLSearchParams();
+  if (instance) params.set('instance', instance);
+  const qs = params.toString();
+  return apiFetch(`/api/pictures/next${qs ? `?${qs}` : ''}`);
 }
 
 export async function importPictureIds(

@@ -43,15 +43,27 @@ jobs:
           TOKEN=$(echo $RESPONSE | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
           if [ -z "$TOKEN" ]; then echo "FAIL: No token"; exit 1; fi
 
-          # Get settings
-          curl -s http://localhost:3000/api/settings | grep -q 'cacheSize' || { echo "FAIL: settings"; exit 1; }
+          # Get settings and verify seeded empty shape
+          curl -s http://localhost:3000/api/settings | grep -q '"instances":\[\]' || { echo "FAIL: seeded instances not empty"; exit 1; }
+          curl -s http://localhost:3000/api/settings | grep -q '"activeInstance":""' || { echo "FAIL: seeded activeInstance not empty"; exit 1; }
 
-          # Import a test picture
+          # Seed a known instance before import
+          curl -s -X PUT http://localhost:3000/api/settings \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d '{"instances":["https://panoramax.ign.fr/api"],"activeInstance":"https://panoramax.ign.fr/api"}' \
+            | grep -q '"instances"' || { echo "FAIL: settings put"; exit 1; }
+
+          # Import a test picture with explicit instanceUrl
           curl -s -X POST http://localhost:3000/api/pictures/import \
             -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-            -d '{"pictureIds":["5b29337b-9f93-4a69-89b2-3e28edcdb66b"]}' | grep -q '"added":1' || { echo "FAIL: import"; exit 1; }
+            -d '{"pictureIds":["5b29337b-9f93-4a69-89b2-3e28edcdb66b"],"instanceUrl":"https://panoramax.ign.fr/api"}' | grep -q '"added":1' || { echo "FAIL: import"; exit 1; }
 
-          # Get next picture
+          # Verify instance filter on queue and next endpoints
+          curl -s "http://localhost:3000/api/pictures/next?instance=https://panoramax.ign.fr/api" -H "Authorization: Bearer $TOKEN" | grep -q 'pictureId' || { echo "FAIL: next with instance filter"; exit 1; }
+          curl -s "http://localhost:3000/api/pictures/queue?instance=https://panoramax.ign.fr/api" -H "Authorization: Bearer $TOKEN" | grep -q 'queue' || { echo "FAIL: queue with instance filter"; exit 1; }
+          curl -s "http://localhost:3000/api/pictures/next?instance=https://nope.test/api" -H "Authorization: Bearer $TOKEN" | grep -q '"picture":null' || { echo "FAIL: next with unknown instance"; exit 1; }
+
+          # Get next picture (no filter)
           curl -s http://localhost:3000/api/pictures/next -H "Authorization: Bearer $TOKEN" | grep -q 'pictureId' || { echo "FAIL: next"; exit 1; }
 
           # Submit a review

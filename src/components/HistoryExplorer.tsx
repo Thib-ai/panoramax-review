@@ -14,9 +14,10 @@ interface HistoryExplorerProps {
   isOpen: boolean;
   onClose: () => void;
   stats: AppStats | null;
+  knownInstances: string[];
 }
 
-export default function HistoryExplorer({ isOpen, onClose, stats }: HistoryExplorerProps) {
+export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances }: HistoryExplorerProps) {
   const [tab, setTab] = useState<'dashboard' | 'timeline'>('dashboard');
   const [pictures, setPictures] = useState<PictureItem[]>([]);
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
@@ -292,9 +293,14 @@ export default function HistoryExplorer({ isOpen, onClose, stats }: HistoryExplo
                     </th>
                     <th className="min-w-[140px] px-3 py-2">
                       Panoramax API
-                      <input type="text" placeholder="Filter..." value={filters.instance} onChange={(e) => setFilters({ ...filters, instance: e.target.value })}
+                      <select value={filters.instance} onChange={(e) => setFilters({ ...filters, instance: e.target.value })}
                         className="mt-1 w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-normal normal-case text-slate-800 focus:outline-none focus:border-slate-900"
-                      />
+                      >
+                        <option value="">All Instances</option>
+                        {knownInstances.map((url) => (
+                          <option key={url} value={url}>{url.replace('https://', '')}</option>
+                        ))}
+                      </select>
                     </th>
                     <th className="min-w-[120px] px-3 py-2 text-right">
                       Reviewer / Date

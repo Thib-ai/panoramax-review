@@ -76,15 +76,13 @@ When a STAC feature has no `id` but has an `assets.sd.href`, the extracted ID is
 SQLite's `JSON_OBJECT` stores booleans as integers:
 ```sql
 INSERT OR IGNORE INTO settings (key, value) VALUES ('global', JSON_OBJECT(
-    'cacheSize', 10, 'instanceUrl', '...', 'autoFetchApi', true, 'cellularSaverMode', false
+    'cacheSize', 10, 'autoFetchApi', true, 'cellularSaverMode', false
 ));
 ```
 
-The smoke test confirms the response: `{"cacheSize":10,"instanceUrl":"...","autoFetchApi":1,"cellularSaverMode":0}`. The frontend's `SettingsModal` uses `settings.autoFetchApi` in conditionals and `settings.cellularSaverMode` as a checkbox `checked` value. `1` is truthy in JS so most things work, but `0` for `cellularSaverMode` means the checkbox shows as unchecked (correct), while `1` for `autoFetchApi` is truthy (also correct). However, this is fragile — any `=== true` comparison would fail.
-
-**Fix:** Store the settings JSON via `JSON.stringify()` in the seed migration instead of `JSON_OBJECT()`, so the initial values are real booleans:
+Note: this was already fixed. The seed now uses a JSON string literal instead of `JSON_OBJECT()`:
 ```sql
-INSERT OR IGNORE INTO settings (key, value) VALUES ('global', '{"cacheSize":10,"instanceUrl":"https://panoramax.mapcomplete.org/api","autoFetchApi":true,"cellularSaverMode":false}');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('global', '{"cacheSize":10,"instances":[],"activeInstance":"","autoFetchApi":true,"cellularSaverMode":false}');
 ```
 
 ---
@@ -231,3 +229,97 @@ The dashboard tab has server-side pagination, but the timeline tab loads ALL rev
 - **PWA**: manifest, service worker, icon generation, SW registration gated by production, install prompt capture — all correct.
 - **UI components**: all 8 components exist with the right structure and Tailwind classes. The `ErrorModal` properly maps `COMMON_ERROR_REASONS` to lucide icons via `iconMap`.
 - **CI**: the GitHub Actions workflow runs lint, build, and a real smoke test against the built server — exactly what the spec's acceptance checklist asked for.
+
+---
+
+# Multi-Instance Implementation Review
+
+Reviewed the working-tree changes that implement `plan.md` (multi-instance Panoramax support). Lint (`tsc --noEmit`) passes. Below are issues found in the implementation, grouped by severity. None of the CRITICALs are blockers, but they should be fixed before merging.
+
+---
+
+## CRITICAL — correctness bugs in the new code
+
+### C5. ~~`activeInstance` is not persisted when changed via the header dropdown~~ ✅ **FIXED**
+
+`onChange` is now `async` and `await`s `updateAppSettings` before calling `loadInitialAppData`. The race condition is eliminated.
+
+### C6. ~~ImportModal `defaultUrl` never updates when `activeInstance` changes~~ ✅ **FIXED**
+
+Added a `useEffect` that syncs `selectedInstance`, `showCustomInstance`, `stacUrl`, and `customInstanceUrl` when `isOpen` flips to true, matching the same pattern SettingsModal already uses.
+
+### C7. ~~Removing the active instance in SettingsModal leaves `activeInstance` pointing at a non-listed URL~~ ✅ **FIXED**
+
+`handleSettingsSaved` in `App.tsx` now detects when `activeInstance` changed and calls `loadInitialAppData(s.activeInstance)` to reload the queue immediately.
+
+---
+
+## IMPORTANT — UX / correctness degradations
+
+### I4. ~~SettingsModal "Add Instance" button disabled but Enter still fires~~ ✅ **FIXED**
+
+The Enter handler now also checks `newInstanceUrl.trim()` before calling `addInstance()`, matching the button's `disabled` state.
+
+**File:** `src/components/SettingsModal.tsx:166-167`
+
+```tsx
+onKeyDown={(e) => { if (e.key === 'Enter') addInstance(); }}
+```
+
+`addInstance` does `if (!url) return;` so it's safe, but the button shows `disabled={!newInstanceUrl.trim()}` while the input still responds to Enter. Minor inconsistency — pressing Enter on an empty input does nothing visible but also doesn't surface the validation message. Not a bug, but either also disable the Enter handler or let it show "Invalid URL format." for consistency.
+
+### I5. ~~`PUT /api/settings` allows empty `instances` array with a non-empty `activeInstance`~~ ✅ **FIXED**
+
+The server now sanitizes the merged settings: if `activeInstance` is not in `instances`, it falls back to `''`. No 400 error — just a silent fix-up.
+
+### I6. ~~Header instance dropdown `value` can be a URL not in `instances`~~ ✅ **FIXED**
+
+`value` now uses `settings.instances.includes(settings.activeInstance) ? settings.activeInstance : ''`.
+
+### I7. ~~`countPendingByUser` doesn't respect the instance filter~~ ✅ **FIXED**
+
+Added `countPendingByUserAndInstance` prepared statement, used in both `/api/pictures/queue` and `/api/pictures/next` when `?instance=` is provided.
+
+### I8. ~~CI smoke test no longer asserts the seeded empty shape~~ ✅ **FIXED**
+
+Now asserts `"instances":[]` and `"activeInstance":""` in the GET settings response.
+
+### I9. ~~Smoke test doesn't verify per-instance filter~~ ✅ **FIXED**
+
+Added three checks after import: `next?instance=<known>` returns a picture, `queue?instance=<known>` returns a queue, and `next?instance=<unknown>` returns `"picture":null`.
+
+---
+
+## MINOR — cosmetic / nice-to-have
+
+### M4. ~~`ImportModal` "Target Instance" dropdown shows raw `https://` URLs~~ ✅ **FIXED**
+
+Now uses `url.replace('https://', '')` for display, matching the header and HistoryExplorer.
+
+### M5. `stacUrl` `onFocus` auto-fill is fragile
+
+**File:** `src/components/ImportModal.tsx:282-284`
+
+Still open. The `onFocus` handler only fires when `stacUrl` is empty. With the new `useEffect` syncing state on open (C6 fix), `stacUrl` is now initialized from `activeInstance`/`instances[0]` on each open, so the `onFocus` fallback is less likely to be needed. But the fragility remains in theory. Worth a follow-up: derive `stacUrl` directly from `instanceUrl` when the user switches to the STAC tab.
+
+### M6. ~~`SettingsModal` doesn't show which instance is "active"~~ ✅ **FIXED**
+
+An "Active" text badge now appears next to the active instance's URL in the instance list.
+
+### M7. `review.md` has been updated to mark fixed items
+
+The pre-existing sections (C1-C4, I1-I3, M1-M3) describe the codebase before multi-instance and remain accurate. The multi-instance review items C5-C7, I4-I9, M4, M6 have all been addressed in the working tree. Items still open: C1 (keyboard skip), C2 (sub-path installs), I1 (advanceToNextPicture always fetches), I2 (CSV export filters), I3 (dashboard label), M1 (dead code), M2 (unused import), M3 (timeline pagination), M5 (stacUrl fragility). These are pre-existing issues unrelated to the multi-instance feature.
+
+---
+
+## What's done well (multi-instance)
+
+- **Types**: `AppSettings` correctly uses `instances: string[]` + `activeInstance: string`. `PictureItem.instanceUrl` was already present and is now the source of truth for per-picture instance.
+- **Server `buildPanoramaxUrls`**: correctly made `instanceUrl` required (no fallback). Same change mirrored in `src/services/helpers.ts`.
+- **Server endpoints**: `/api/pictures/queue` and `/api/pictures/next` correctly accept `?instance=` and filter via parameterized SQL (no injection). The dynamic SQL building is a bit verbose but correct.
+- **Import/fetch-panoramax fallback chain**: `instanceUrl || settings.activeInstance || settings.instances[0]` with 400 on missing — exactly matches plan §3f/§3g.
+- **Settings seed migration**: correctly seeds empty `instances` array and empty `activeInstance`. No mapcomplete anywhere in the seed.
+- **First-run empty state**: amber banner in `App.tsx` nudging the user to Settings is a nice touch.
+- **HistoryExplorer**: instance filter correctly upgraded from free-text input to dropdown populated from `knownInstances` prop.
+- **CI smoke test**: correctly seeds an instance via PUT before import, and passes `instanceUrl` in the import body — exercises the new fallback chain.
+- **No mapcomplete references remain in `src/` or `server.ts`** (verified via grep). The only remaining references are in `review.md`, `plan.md` (this file), and historical git log, which is expected.

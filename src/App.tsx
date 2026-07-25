@@ -5,7 +5,7 @@ import {
 import type { User, PictureItem, AppStats, AppSettings, UndoItem } from './types';
 import { bootstrapSession } from './services/session';
 import {
-  fetchPictureQueue, fetchAppStats, fetchAppSettings,
+  fetchPictureQueue, fetchAppStats, fetchAppSettings, updateAppSettings,
   submitPictureReview, undoPictureReview, syncOfflineQueue, logoutUser,
 } from './services/api';
 import { getOfflineCount, cachePictureQueue } from './services/offlineQueue';
@@ -28,7 +28,8 @@ export default function App() {
   const [stats, setStats] = useState<AppStats | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     cacheSize: 10,
-    instanceUrl: 'https://panoramax.mapcomplete.org/api',
+    instances: [],
+    activeInstance: '',
     autoFetchApi: true,
     cellularSaverMode: false,
   });
@@ -96,12 +97,13 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
-  const loadInitialAppData = useCallback(async () => {
+  const loadInitialAppData = useCallback(async (instanceFilter?: string) => {
     try {
+      const instance = instanceFilter || settings.activeInstance || undefined;
       const [s, st, q] = await Promise.all([
         fetchAppStats(),
         fetchAppSettings(),
-        fetchPictureQueue(settings.cacheSize),
+        fetchPictureQueue(settings.cacheSize, instance),
       ]);
       setStats(s);
       setSettings(st);
@@ -114,7 +116,7 @@ export default function App() {
       cacheManager.prefetchPictures(q.queue, st.cacheSize);
       cachePictureQueue(q.queue);
     } catch { /* ignore */ }
-  }, [settings.cacheSize]);
+  }, [settings.cacheSize, settings.activeInstance]);
 
   useEffect(() => {
     if (user) {
@@ -132,7 +134,8 @@ export default function App() {
     } else {
       setLoadingPicture(true);
       try {
-        const result = await fetchPictureQueue(settings.cacheSize);
+        const instance = settings.activeInstance || undefined;
+        const result = await fetchPictureQueue(settings.cacheSize, instance);
         if (result.queue.length > 0) {
           setCurrentPicture(result.queue[0]);
           setQueue(result.queue.slice(1));
@@ -148,7 +151,7 @@ export default function App() {
       }
     }
     loadStats();
-  }, [queue, settings.cacheSize, loadStats]);
+  }, [queue, settings.cacheSize, settings.activeInstance, loadStats]);
 
   const handlePassOk = useCallback(async () => {
     if (!currentPicture || !user) return;
@@ -225,9 +228,11 @@ export default function App() {
   }, [loadStats, advanceToNextPicture]);
 
   const handleSettingsSaved = useCallback((s: AppSettings) => {
+    const instanceChanged = s.activeInstance !== settings.activeInstance;
     setSettings(s);
     cacheManager.setCellularSaver(s.cellularSaverMode || false);
-  }, []);
+    if (instanceChanged) loadInitialAppData(s.activeInstance || undefined);
+  }, [settings.activeInstance, loadInitialAppData]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -311,6 +316,25 @@ export default function App() {
             </button>
           )}
 
+          {settings.instances.length > 0 && (
+            <select
+              value={settings.instances.includes(settings.activeInstance) ? settings.activeInstance : ''}
+              onChange={async (e) => {
+                const newVal = e.target.value;
+                setSettings({ ...settings, activeInstance: newVal });
+                await updateAppSettings({ activeInstance: newVal });
+                loadInitialAppData(newVal || undefined);
+              }}
+              className="max-w-[140px] bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[11px] text-slate-800 focus:outline-none focus:border-slate-900 truncate"
+              title="Filter by instance"
+            >
+              <option value="">All Instances</option>
+              {settings.instances.map((url) => (
+                <option key={url} value={url}>{url.replace('https://', '')}</option>
+              ))}
+            </select>
+          )}
+
           <button
             id="btn-header-import"
             type="button"
@@ -382,6 +406,29 @@ export default function App() {
         </div>
       </header>
 
+      {settings.instances.length === 0 && (
+        <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-900 font-medium">
+            No Panoramax instances configured.{' '}
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen(true)}
+              className="underline font-semibold hover:text-amber-950"
+            >
+              Add one in Settings
+            </button>{' '}
+            to start importing and reviewing pictures.
+          </p>
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+            className="shrink-0 px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg transition-all active:scale-95"
+          >
+            Open Settings
+          </button>
+        </div>
+      )}
+
       <main className="flex-1 w-full relative overflow-hidden flex flex-col bg-slate-950">
         <ImageStage
           picture={currentPicture}
@@ -418,13 +465,15 @@ export default function App() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImportComplete={handleImportComplete}
-        defaultInstanceUrl={settings.instanceUrl}
+        instances={settings.instances}
+        activeInstance={settings.activeInstance}
       />
 
       <HistoryExplorer
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
         stats={stats}
+        knownInstances={settings.instances}
       />
 
       <SettingsModal

@@ -80,7 +80,7 @@ function migrate() {
       value TEXT NOT NULL
     );
 
-    INSERT OR IGNORE INTO settings (key, value) VALUES ('global', '{"cacheSize":10,"instanceUrl":"https://panoramax.mapcomplete.org/api","autoFetchApi":true,"cellularSaverMode":false}');
+    INSERT OR IGNORE INTO settings (key, value) VALUES ('global', '{"cacheSize":10,"instances":[],"activeInstance":"","autoFetchApi":true,"cellularSaverMode":false}');
   `);
 }
 migrate();
@@ -100,6 +100,9 @@ const stmts = {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`),
   countPictures: sqlite.prepare('SELECT COUNT(*) as count FROM pictures'),
   countPendingByUser: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE LOWER(picture_id) NOT IN (
+    SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
+  )`),
+  countPendingByUserAndInstance: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE instance_url = ? AND LOWER(picture_id) NOT IN (
     SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
   )`),
   insertReview: sqlite.prepare('INSERT INTO reviews (id, picture_id, user_id, user_name, status, error_reason, comment, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
@@ -160,12 +163,12 @@ function mapToReviewRecord(row: Row): ReviewRecord {
   };
 }
 
-function buildPanoramaxUrls(pictureId: string, instanceUrl?: string): { sdUrl: string; hdUrl: string; thumbUrl: string } {
+function buildPanoramaxUrls(pictureId: string, instanceUrl: string): { sdUrl: string; hdUrl: string; thumbUrl: string } {
   if (pictureId.startsWith('http://') || pictureId.startsWith('https://')) {
     return { sdUrl: pictureId, hdUrl: pictureId, thumbUrl: pictureId };
   }
   const hex = pictureId.replace(/[^a-f0-9]/gi, '').toLowerCase();
-  const base = (instanceUrl || 'https://panoramax.mapcomplete.org').replace(/\/api\/?$/, '').replace(/\/$/, '');
+  const base = instanceUrl.replace(/\/api\/?$/, '').replace(/\/$/, '');
   if (hex.length >= 32) {
     const p1 = hex.slice(0, 2), p2 = hex.slice(2, 4), p3 = hex.slice(4, 6), p4 = hex.slice(6, 8);
     const rest = pictureId.toLowerCase().replace(/^[a-f0-9]{8}-/, '');
@@ -176,7 +179,7 @@ function buildPanoramaxUrls(pictureId: string, instanceUrl?: string): { sdUrl: s
       thumbUrl: `${cdnBase}/derivatives/${p1}/${p2}/${p3}/${p4}/${rest}/thumb.jpg`,
     };
   }
-  const apiBase = (instanceUrl || 'https://panoramax.mapcomplete.org/api').replace(/\/$/, '');
+  const apiBase = instanceUrl.replace(/\/$/, '');
   return {
     sdUrl: `${apiBase}/pictures/${pictureId}/sd.jpg`,
     hdUrl: `${apiBase}/pictures/${pictureId}/hd.jpg`,
@@ -285,7 +288,7 @@ app.use((req, res, next) => {
 function readSettings(): AppSettings {
   const row = stmts.getSettings.get('global') as Row | undefined;
   if (!row) {
-    return { cacheSize: 10, instanceUrl: 'https://panoramax.mapcomplete.org/api', autoFetchApi: true, cellularSaverMode: false };
+    return { cacheSize: 10, instances: [], activeInstance: '', autoFetchApi: true, cellularSaverMode: false };
   }
   return JSON.parse(row.value as string);
 }
@@ -325,25 +328,44 @@ app.post('/api/auth/logout', wrap((req, res) => {
 // GET /api/pictures/queue
 app.get('/api/pictures/queue', wrap((req, res) => {
   if (!requireAuth(req, res)) return;
+  const instance = req.query.instance as string || '';
   const limit = Math.min(Math.max(Number(req.query.limit) || readSettings().cacheSize, 1), 500);
   const settings = readSettings();
   const cacheSize = Math.min(Math.max(settings.cacheSize, 5), 500);
   const effectiveLimit = Math.min(limit || cacheSize, 500);
   const userId = req._user!.id;
 
-  const totalPendingRow = stmts.countPendingByUser.get(userId) as Row;
-  const totalPending = totalPendingRow.count as number;
   const totalRow = stmts.countPictures.get() as Row;
   const totalPictures = totalRow.count as number;
 
+  const totalPending = instance
+    ? (stmts.countPendingByUserAndInstance.get(instance, userId) as Row).count as number
+    : (stmts.countPendingByUser.get(userId) as Row).count as number;
+
   let queue: PictureItem[];
   if (totalPending > 0) {
-    const rows = sqlite.prepare(`SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
+    let sql = `SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
       SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
-    ) ORDER BY RANDOM() LIMIT ?`).all(userId, effectiveLimit) as Row[];
+    )`;
+    const params: unknown[] = [userId];
+    if (instance) {
+      sql += ' AND instance_url = ?';
+      params.push(instance);
+    }
+    sql += ' ORDER BY RANDOM() LIMIT ?';
+    params.push(effectiveLimit);
+    const rows = sqlite.prepare(sql).all(...params) as Row[];
     queue = rows.map(mapToPictureItem);
   } else {
-    const rows = sqlite.prepare('SELECT * FROM pictures ORDER BY RANDOM() LIMIT ?').all(effectiveLimit) as Row[];
+    let sql = 'SELECT * FROM pictures';
+    const params: unknown[] = [];
+    if (instance) {
+      sql += ' WHERE instance_url = ?';
+      params.push(instance);
+    }
+    sql += ' ORDER BY RANDOM() LIMIT ?';
+    params.push(effectiveLimit);
+    const rows = sqlite.prepare(sql).all(...params) as Row[];
     queue = rows.map(mapToPictureItem);
   }
 
@@ -353,6 +375,7 @@ app.get('/api/pictures/queue', wrap((req, res) => {
 // GET /api/pictures/next
 app.get('/api/pictures/next', wrap((req, res) => {
   if (!requireAuth(req, res)) return;
+  const instance = req.query.instance as string || '';
   const userId = req._user!.id;
 
   const countRow = stmts.countPictures.get() as Row;
@@ -361,22 +384,37 @@ app.get('/api/pictures/next', wrap((req, res) => {
     return;
   }
 
-  const totalPendingRow = stmts.countPendingByUser.get(userId) as Row;
-  const totalPending = totalPendingRow.count as number;
+  const totalPending = instance
+    ? (stmts.countPendingByUserAndInstance.get(instance, userId) as Row).count as number
+    : (stmts.countPendingByUser.get(userId) as Row).count as number;
 
   let picture: PictureItem | null = null;
   let queueExhausted = false;
 
   if (totalPending > 0) {
-    const row = sqlite.prepare(`SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
+    let sql = `SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
       SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
-    ) ORDER BY RANDOM() LIMIT 1`).get(userId) as Row | undefined;
+    )`;
+    const params: unknown[] = [userId];
+    if (instance) {
+      sql += ' AND instance_url = ?';
+      params.push(instance);
+    }
+    sql += ' ORDER BY RANDOM() LIMIT 1';
+    const row = sqlite.prepare(sql).get(...params) as Row | undefined;
     if (row) picture = mapToPictureItem(row);
   }
 
   if (!picture) {
     queueExhausted = totalPending === 0;
-    const row = sqlite.prepare('SELECT * FROM pictures ORDER BY RANDOM() LIMIT 1').get() as Row | undefined;
+    let sql = 'SELECT * FROM pictures';
+    const params: unknown[] = [];
+    if (instance) {
+      sql += ' WHERE instance_url = ?';
+      params.push(instance);
+    }
+    sql += ' ORDER BY RANDOM() LIMIT 1';
+    const row = sqlite.prepare(sql).get(...params) as Row | undefined;
     if (row) picture = mapToPictureItem(row);
   }
 
@@ -392,7 +430,11 @@ app.post('/api/pictures/import', wrap((req, res) => {
     return;
   }
   const settings = readSettings();
-  const baseUrl = instanceUrl || settings.instanceUrl;
+  const baseUrl = (instanceUrl || settings.activeInstance || settings.instances[0] || '').replace(/\/$/, '');
+  if (!baseUrl) {
+    res.status(400).json({ error: 'instanceUrl is required (no instance configured in settings)' });
+    return;
+  }
 
   let added = 0;
   let duplicatesSkipped = 0;
@@ -428,7 +470,11 @@ app.post('/api/pictures/import', wrap((req, res) => {
 app.post('/api/pictures/fetch-panoramax', wrap(async (req, res) => {
   if (!requireAuth(req, res)) return;
   const settings = readSettings();
-  const instanceUrl = (req.body?.instanceUrl as string || settings.instanceUrl).replace(/\/$/, '');
+  const instanceUrl = ((req.body?.instanceUrl as string) || settings.activeInstance || settings.instances[0] || '').replace(/\/$/, '');
+  if (!instanceUrl) {
+    res.status(400).json({ error: 'instanceUrl is required (no instance configured in settings)' });
+    return;
+  }
   const limit = Math.min(Math.max(Number(req.body?.limit) || 20, 1), 100);
 
   let response: Response;
@@ -645,6 +691,9 @@ app.put('/api/settings', wrap((req, res) => {
   const current = readSettings();
   const update = req.body as Partial<AppSettings>;
   const merged = { ...current, ...update };
+  if (merged.activeInstance && Array.isArray(merged.instances) && !merged.instances.includes(merged.activeInstance)) {
+    merged.activeInstance = '';
+  }
   merged.cacheSize = Math.min(Math.max(merged.cacheSize, 5), 500);
   stmts.upsertSettings.run('global', JSON.stringify(merged));
   res.json(merged);

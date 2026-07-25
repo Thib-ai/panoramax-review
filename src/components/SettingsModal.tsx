@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, CheckCircle2, Smartphone, WifiOff, Trash2, Save, X } from 'lucide-react';
+import { Settings, CheckCircle2, Smartphone, WifiOff, Trash2, Save, X, Plus } from 'lucide-react';
 import type { AppSettings } from '../types';
 import { cacheManager } from '../services/cacheManager';
 import { updateAppSettings } from '../services/api';
@@ -13,7 +13,9 @@ interface SettingsModalProps {
 
 export default function SettingsModal({ isOpen, settings, onClose, onSave }: SettingsModalProps) {
   const [cacheSize, setCacheSize] = useState(settings.cacheSize);
-  const [instanceUrl, setInstanceUrl] = useState(settings.instanceUrl);
+  const [instances, setInstances] = useState(settings.instances);
+  const [activeInstance, setActiveInstance] = useState(settings.activeInstance);
+  const [newInstanceUrl, setNewInstanceUrl] = useState('');
   const [cellularSaver, setCellularSaver] = useState(settings.cellularSaverMode || false);
   const [cachedCount, setCachedCount] = useState(0);
   const [message, setMessage] = useState('');
@@ -23,8 +25,10 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
   useEffect(() => {
     if (isOpen) {
       setCacheSize(settings.cacheSize);
-      setInstanceUrl(settings.instanceUrl);
+      setInstances(settings.instances);
+      setActiveInstance(settings.activeInstance);
       setCellularSaver(settings.cellularSaverMode || false);
+      setNewInstanceUrl('');
       setMessage('');
       cacheManager.getCachedCount().then((c) => setCachedCount(c));
       const conn = (navigator as any).connection;
@@ -35,12 +39,36 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
     }
   }, [isOpen, settings]);
 
+  const addInstance = () => {
+    const url = newInstanceUrl.replace(/\/$/, '').trim();
+    if (!url) return;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      setMessage('Invalid URL format.');
+      return;
+    }
+    if (instances.includes(url)) {
+      setMessage('Duplicate instance URL.');
+      return;
+    }
+    setInstances([...instances, url]);
+    if (activeInstance === '') setActiveInstance(url);
+    setNewInstanceUrl('');
+    setMessage('');
+  };
+
+  const removeInstance = (url: string) => {
+    const next = instances.filter((i) => i !== url);
+    setInstances(next);
+    if (activeInstance === url) setActiveInstance(next[0] || '');
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
       const merged: AppSettings = {
         cacheSize: Math.min(Math.max(cacheSize, 5), 500),
-        instanceUrl: instanceUrl || settings.instanceUrl,
+        instances,
+        activeInstance,
         autoFetchApi: settings.autoFetchApi,
         cellularSaverMode: cellularSaver,
       };
@@ -87,6 +115,59 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
             {message}
           </div>
         )}
+
+        <div className="space-y-3">
+          <label className="text-xs font-semibold text-slate-700 block">Panoramax Instances</label>
+          {instances.length === 0 && (
+            <p className="text-[11px] text-slate-500 italic">No instances configured. Add one below.</p>
+          )}
+          <div className="space-y-1.5 max-h-40 overflow-y-auto">
+            {instances.map((url) => (
+              <div key={url} className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200/80">
+                <button
+                  type="button"
+                  onClick={() => setActiveInstance(url)}
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    activeInstance === url ? 'border-slate-900' : 'border-slate-300'
+                  }`}
+                  title={activeInstance === url ? 'Active instance' : 'Set as active'}
+                >
+                  {activeInstance === url && <div className="w-2 h-2 rounded-full bg-slate-900" />}
+                </button>
+                <span className="flex-1 text-xs font-mono truncate text-slate-800">{url}</span>
+                {activeInstance === url && <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider shrink-0">Active</span>}
+                <button
+                  type="button"
+                  onClick={() => removeInstance(url)}
+                  className="p-0.5 text-slate-400 hover:text-rose-600 rounded transition-colors"
+                  title="Remove instance"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={newInstanceUrl}
+              onChange={(e) => setNewInstanceUrl(e.target.value)}
+              placeholder="https://panoramax.example.com/api"
+              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-slate-900"
+              onKeyDown={(e) => { if (e.key === 'Enter' && newInstanceUrl.trim()) addInstance(); }}
+            />
+            <button
+              type="button"
+              onClick={addInstance}
+              disabled={!newInstanceUrl.trim()}
+              className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold flex items-center gap-1 disabled:opacity-50 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-400">Pictures are associated with the instance they were imported from.</p>
+        </div>
 
         <div>
           <div className="flex items-center justify-between mb-1.5">
@@ -151,16 +232,6 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
               Cellular/metered connection detected on this device. Data saver is recommended.
             </div>
           )}
-        </div>
-
-        <div>
-          <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Default Panoramax Instance URL</label>
-          <input
-            type="url"
-            value={instanceUrl}
-            onChange={(e) => setInstanceUrl(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-slate-900"
-          />
         </div>
 
         <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-3">

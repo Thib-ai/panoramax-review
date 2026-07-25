@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, X, FileText, Globe, CheckCircle2, AlertCircle, FileUp, ListFilter } from 'lucide-react';
 import { importPictureIds, fetchPanoramaxApiPictures } from '../services/api';
 import type { ImportResult } from '../types';
@@ -7,20 +7,37 @@ interface ImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   onImportComplete: () => void;
-  defaultInstanceUrl: string;
+  instances: string[];
+  activeInstance: string;
 }
 
-export default function ImportModal({ isOpen, onClose, onImportComplete, defaultInstanceUrl }: ImportModalProps) {
+export default function ImportModal({ isOpen, onClose, onImportComplete, instances, activeInstance }: ImportModalProps) {
+  const defaultUrl = activeInstance || instances[0] || '';
   const [tab, setTab] = useState<'text' | 'stac'>('text');
   const [pastedText, setPastedText] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [totalProgress, setTotalProgress] = useState(0);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [stacUrl, setStacUrl] = useState(defaultInstanceUrl);
+  const [selectedInstance, setSelectedInstance] = useState(defaultUrl);
+  const [showCustomInstance, setShowCustomInstance] = useState(!defaultUrl);
+  const [customInstanceUrl, setCustomInstanceUrl] = useState('');
+  const [stacUrl, setStacUrl] = useState(defaultUrl);
   const [stacLimit, setStacLimit] = useState(25);
   const [fileName, setFileName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      const url = activeInstance || instances[0] || '';
+      setSelectedInstance(url);
+      setShowCustomInstance(!url);
+      setCustomInstanceUrl('');
+      setStacUrl(url);
+    }
+  }, [isOpen, activeInstance, instances]);
+
+  const instanceUrl = showCustomInstance ? customInstanceUrl : selectedInstance;
 
   const reset = useCallback(() => {
     setPastedText('');
@@ -36,11 +53,15 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
       setMessage({ type: 'error', text: 'No valid picture IDs found.' });
       return;
     }
+    if (!instanceUrl) {
+      setMessage({ type: 'error', text: 'Please select or enter a target Panoramax instance.' });
+      return;
+    }
     setLoading(true);
     setProgress(0);
     setTotalProgress(ids.length);
     try {
-      const result = await importPictureIds(ids, defaultInstanceUrl, (processed, total) => {
+      const result = await importPictureIds(ids, instanceUrl, (processed, total) => {
         setProgress(processed);
         setTotalProgress(total);
       });
@@ -52,7 +73,7 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
     } finally {
       setLoading(false);
     }
-  }, [defaultInstanceUrl, onImportComplete, onClose]);
+  }, [instanceUrl, onImportComplete, onClose]);
 
   const parseAndProcessText = useCallback(() => {
     const ids = pastedText
@@ -79,6 +100,10 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
   }, [handleFile]);
 
   const handleStacSync = useCallback(async () => {
+    if (!stacUrl) {
+      setMessage({ type: 'error', text: 'Please enter a Panoramax API endpoint URL.' });
+      return;
+    }
     setLoading(true);
     setMessage(null);
     try {
@@ -112,6 +137,40 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
           <button type="button" onClick={onClose} title="Close" className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg">
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-slate-700 block">Target Instance</label>
+          <div className="flex items-center gap-2">
+            <select
+              value={showCustomInstance ? '__custom__' : selectedInstance}
+              onChange={(e) => {
+                if (e.target.value === '__custom__') {
+                  setShowCustomInstance(true);
+                  setCustomInstanceUrl(selectedInstance);
+                } else {
+                  setShowCustomInstance(false);
+                  setSelectedInstance(e.target.value);
+                }
+              }}
+              className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-slate-900"
+            >
+              {instances.length === 0 && <option value="">No instances configured</option>}
+              {instances.map((url) => (
+                <option key={url} value={url}>{url.replace('https://', '')}</option>
+              ))}
+              <option value="__custom__">Custom...</option>
+            </select>
+          </div>
+          {showCustomInstance && (
+            <input
+              type="url"
+              value={customInstanceUrl}
+              onChange={(e) => setCustomInstanceUrl(e.target.value)}
+              placeholder="https://panoramax.example.com/api"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-slate-900"
+            />
+          )}
         </div>
 
         <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200/60">
@@ -182,7 +241,7 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
               <textarea
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
-                placeholder={`5b29337b-9f93-4a69-89b2-3e28edcdb66b\nhttps://panoramax.mapcomplete.org/api/pictures/.../sd.jpg`}
+                placeholder={`5b29337b-9f93-4a69-89b2-3e28edcdb66b\nhttps://<instance>/api/pictures/.../sd.jpg`}
                 rows={4}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-mono text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900 resize-none"
               />
@@ -230,6 +289,9 @@ export default function ImportModal({ isOpen, onClose, onImportComplete, default
                 type="url"
                 value={stacUrl}
                 onChange={(e) => setStacUrl(e.target.value)}
+                onFocus={() => {
+                  if (!stacUrl && instanceUrl) setStacUrl(instanceUrl);
+                }}
                 required
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-slate-900"
               />

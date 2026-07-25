@@ -52,7 +52,8 @@ export interface AppStats {
 
 export interface AppSettings {
   cacheSize: number;
-  instanceUrl: string;
+  instances: string[];
+  activeInstance: string;
   autoFetchApi: boolean;
   cellularSaverMode?: boolean;
 }
