@@ -82,6 +82,12 @@ function migrate() {
 
     INSERT OR IGNORE INTO settings (key, value) VALUES ('global', '{"cacheSize":10,"instances":[],"activeInstance":"","autoFetchApi":true,"cellularSaverMode":false}');
   `);
+
+  // Normalize all picture_id values to lowercase so lookups can use the UNIQUE index
+  // (queries no longer wrap picture_id in LOWER(), which used to force full-table scans).
+  // Safe under the picture_id UNIQUE constraint: any case collisions would have failed
+  // to insert originally, so lowering cannot create new conflicts.
+  sqlite.exec('UPDATE pictures SET picture_id = LOWER(picture_id) WHERE picture_id != LOWER(picture_id)');
 }
 migrate();
 
@@ -92,18 +98,18 @@ const stmts = {
   getSession: sqlite.prepare('SELECT * FROM sessions WHERE token = ?'),
   deleteSession: sqlite.prepare('DELETE FROM sessions WHERE token = ?'),
   insertSession: sqlite.prepare('INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)'),
-  getPictureByPictureId: sqlite.prepare('SELECT * FROM pictures WHERE LOWER(picture_id) = LOWER(?)'),
+  getPictureByPictureId: sqlite.prepare('SELECT * FROM pictures WHERE picture_id = ?'),
   getPictureById: sqlite.prepare('SELECT * FROM pictures WHERE id = ?'),
   getSettings: sqlite.prepare('SELECT value FROM settings WHERE key = ?'),
   upsertSettings: sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)'),
   insertPicture: sqlite.prepare(`INSERT INTO pictures (id, picture_id, instance_url, sd_url, hd_url, thumb_url, location_name, lat, lon, date_captured, status, added_at, review_count)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`),
   countPictures: sqlite.prepare('SELECT COUNT(*) as count FROM pictures'),
-  countPendingByUser: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE LOWER(picture_id) NOT IN (
-    SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
+  countPendingByUser: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE picture_id NOT IN (
+    SELECT r.picture_id FROM reviews r WHERE r.user_id = ?
   )`),
-  countPendingByUserAndInstance: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE instance_url = ? AND LOWER(picture_id) NOT IN (
-    SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
+  countPendingByUserAndInstance: sqlite.prepare(`SELECT COUNT(*) as count FROM pictures WHERE instance_url = ? AND picture_id NOT IN (
+    SELECT r.picture_id FROM reviews r WHERE r.user_id = ?
   )`),
   insertReview: sqlite.prepare('INSERT INTO reviews (id, picture_id, user_id, user_name, status, error_reason, comment, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
   updatePictureAfterReview: sqlite.prepare(`UPDATE pictures SET status = ?, review_count = review_count + 1, last_reviewed_at = ?, last_error_reason = ?, last_comment = ?, last_reviewer = ? WHERE picture_id = ?`),
@@ -115,10 +121,16 @@ const stmts = {
   resetPictureAfterUndo: sqlite.prepare(`UPDATE pictures SET status = 'pending', review_count = 0, last_reviewed_at = NULL, last_error_reason = NULL, last_comment = NULL, last_reviewer = NULL, is_checked_off = 0 WHERE picture_id = ?`),
   updatePictureAfterUndo: sqlite.prepare(`UPDATE pictures SET review_count = ?, last_reviewed_at = ?, last_error_reason = ?, last_comment = ?, last_reviewer = ?, status = ?, is_checked_off = 0 WHERE picture_id = ?`),
   deleteReviewsByPictureId: sqlite.prepare('DELETE FROM reviews WHERE picture_id = ?'),
-  deletePicture: sqlite.prepare('DELETE FROM pictures WHERE id = ? OR LOWER(picture_id) = LOWER(?)'),
-  toggleCheckoff: sqlite.prepare('UPDATE pictures SET is_checked_off = ? WHERE id = ? OR LOWER(picture_id) = LOWER(?)'),
-  resolveIfFlagged: sqlite.prepare("UPDATE pictures SET status = 'resolved' WHERE (id = ? OR LOWER(picture_id) = LOWER(?)) AND status = 'flagged' AND ? = 1"),
-  unresolveIfResolved: sqlite.prepare("UPDATE pictures SET status = 'flagged' WHERE (id = ? OR LOWER(picture_id) = LOWER(?)) AND status = 'resolved' AND ? = 0"),
+  deletePicture: sqlite.prepare('DELETE FROM pictures WHERE id = ? OR picture_id = ?'),
+  toggleCheckoff: sqlite.prepare('UPDATE pictures SET is_checked_off = ? WHERE id = ? OR picture_id = ?'),
+  resolveIfFlagged: sqlite.prepare("UPDATE pictures SET status = 'resolved' WHERE (id = ? OR picture_id = ?) AND status = 'flagged' AND ? = 1"),
+  unresolveIfResolved: sqlite.prepare("UPDATE pictures SET status = 'flagged' WHERE (id = ? OR picture_id = ?) AND status = 'resolved' AND ? = 0"),
+  // Bulk existence check used by import paths. Returns the set of picture_ids already stored.
+  getPicturesByIds: (ids: string[]) => {
+    if (ids.length === 0) return [] as Row[];
+    const placeholders = ids.map(() => '?').join(',');
+    return sqlite.prepare(`SELECT picture_id FROM pictures WHERE picture_id IN (${placeholders})`).all(...ids) as Row[];
+  },
 };
 
 type Row = Record<string, unknown>;
@@ -344,8 +356,8 @@ app.get('/api/pictures/queue', wrap((req, res) => {
 
   let queue: PictureItem[];
   if (totalPending > 0) {
-    let sql = `SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
-      SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
+    let sql = `SELECT * FROM pictures WHERE picture_id NOT IN (
+      SELECT r.picture_id FROM reviews r WHERE r.user_id = ?
     )`;
     const params: unknown[] = [userId];
     if (instance) {
@@ -392,8 +404,8 @@ app.get('/api/pictures/next', wrap((req, res) => {
   let queueExhausted = false;
 
   if (totalPending > 0) {
-    let sql = `SELECT * FROM pictures WHERE LOWER(picture_id) NOT IN (
-      SELECT LOWER(r.picture_id) FROM reviews r WHERE r.user_id = ?
+    let sql = `SELECT * FROM pictures WHERE picture_id NOT IN (
+      SELECT r.picture_id FROM reviews r WHERE r.user_id = ?
     )`;
     const params: unknown[] = [userId];
     if (instance) {
@@ -440,30 +452,49 @@ app.post('/api/pictures/import', wrap((req, res) => {
     return;
   }
 
+  // Clean + lowercase + dedupe the incoming batch in JS so we only hit the DB once
+  // for existence and once per genuinely-new row for insert. picture_id is stored
+  // lowercased (see migration) and indexed UNIQUE, so this is an indexed equality lookup.
+  const seen = new Set<string>();
+  const cleanedIds: string[] = [];
+  for (const rawId of pictureIds) {
+    const cleaned = cleanPictureId(rawId);
+    if (!cleaned) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    cleanedIds.push(cleaned);
+  }
+
   let added = 0;
   let duplicatesSkipped = 0;
   const addedIds: string[] = [];
 
-  const insertBatch = sqlite.transaction((ids: string[]) => {
-    for (const rawId of ids) {
-      const cleaned = cleanPictureId(rawId);
-      if (!cleaned) continue;
-      const existing = stmts.getPictureByPictureId.get(cleaned) as Row | undefined;
-      if (existing) {
-        duplicatesSkipped++;
-        continue;
-      }
-      const urls = buildPanoramaxUrls(cleaned, baseUrl);
-      const internalId = `pic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const now = new Date().toISOString();
-      stmts.insertPicture.run(internalId, cleaned, baseUrl, urls.sdUrl, urls.hdUrl, urls.thumbUrl, null, null, null, null, now);
-      added++;
-      addedIds.push(cleaned);
-    }
-  });
+  if (cleanedIds.length > 0) {
+    const existingIds = new Set(
+      (stmts.getPicturesByIds(cleanedIds) as Row[]).map((r) => r.picture_id as string),
+    );
 
-  if (pictureIds.length > 0) {
-    insertBatch(pictureIds);
+    const toInsert = cleanedIds.filter((id) => {
+      if (existingIds.has(id)) {
+        duplicatesSkipped++;
+        return false;
+      }
+      return true;
+    });
+
+    if (toInsert.length > 0) {
+      const now = new Date().toISOString();
+      const insertAll = sqlite.transaction((ids: string[]) => {
+        for (const cleaned of ids) {
+          const urls = buildPanoramaxUrls(cleaned, baseUrl);
+          const internalId = `pic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          stmts.insertPicture.run(internalId, cleaned, baseUrl, urls.sdUrl, urls.hdUrl, urls.thumbUrl, null, null, null, null, now);
+          added++;
+          addedIds.push(cleaned);
+        }
+      });
+      insertAll(toInsert);
+    }
   }
 
   const totalRow = stmts.countPictures.get() as Row;
@@ -512,51 +543,69 @@ app.post('/api/pictures/fetch-panoramax', wrap(async (req, res) => {
   let duplicatesSkipped = 0;
 
   const baseForUrls = instanceUrl.replace(/\/search$/, '');
-  const insertBatch = sqlite.transaction((feats: Array<Record<string, unknown>>) => {
-    for (const feature of feats) {
-      const props = feature.properties as Record<string, unknown> || {};
-      const assets = feature.assets as Record<string, unknown> || {};
-      const geometry = feature.geometry as Record<string, unknown> | null;
 
-      let pictureId = (feature.id as string || '').toLowerCase();
-      if (!pictureId) {
-        const sdAsset = assets.sd as Record<string, unknown> || {};
-        const href = sdAsset.href as string || '';
-        const extracted = cleanPictureId(href);
-        if (!extracted) continue;
-        pictureId = extracted;
-      }
+  // First pass: extract candidate picture_ids from features, dedupe within the batch.
+  interface Candidate {
+    pictureId: string;
+    feature: Record<string, unknown>;
+  }
+  const seen = new Set<string>();
+  const candidates: Candidate[] = [];
+  for (const feature of features) {
+    const assets = (feature.assets as Record<string, unknown>) || {};
 
-      const existing = stmts.getPictureByPictureId.get(pictureId) as Row | undefined;
-      if (existing) {
-        duplicatesSkipped++;
-        continue;
-      }
-
-      const sdAsset = assets.sd as Record<string, unknown> || {};
-      const hdAsset = assets.hd as Record<string, unknown> || {};
-      const thumbAsset = assets.thumb as Record<string, unknown> || {};
-
-      const sdUrl = (sdAsset.href as string) || `${baseForUrls}/pictures/${pictureId}/sd.jpg`;
-      const hdUrl = (hdAsset.href as string) || `${baseForUrls}/pictures/${pictureId}/hd.jpg`;
-      const thumbUrl = (thumbAsset.href as string) || `${baseForUrls}/pictures/${pictureId}/thumb.jpg`;
-
-      const coords = geometry?.coordinates as number[] | undefined;
-      const lat = coords?.[1] ?? null;
-      const lon = coords?.[0] ?? null;
-
-      const dateCaptured = (props.datetime as string) || (props.created as string) || null;
-      const seq = props['panoramax:sequence'] as string;
-      const locationName = seq ? `Sequence ${seq.slice(0, 8)}` : `Panoramax Photo ${pictureId.slice(0, 8)}`;
-
-      const internalId = `pic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const now = new Date().toISOString();
-      stmts.insertPicture.run(internalId, pictureId, instanceUrl, sdUrl, hdUrl, thumbUrl, locationName, lat, lon, dateCaptured, now);
-      added++;
+    let pictureId = (feature.id as string || '').toLowerCase();
+    if (!pictureId) {
+      const sdAsset = assets.sd as Record<string, unknown> | undefined;
+      const href = (sdAsset?.href as string) || '';
+      const extracted = cleanPictureId(href);
+      if (!extracted) continue;
+      pictureId = extracted;
     }
-  });
+    if (seen.has(pictureId)) continue;
+    seen.add(pictureId);
+    candidates.push({ pictureId, feature });
+  }
 
-  insertBatch(features);
+  // Set-based existence check against the DB (indexed, single query).
+  const existingIds = candidates.length > 0
+    ? new Set((stmts.getPicturesByIds(candidates.map((c) => c.pictureId)) as Row[]).map((r) => r.picture_id as string))
+    : new Set<string>();
+  duplicatesSkipped = candidates.length - existingIds.size;
+
+  const toInsert = candidates.filter((c) => !existingIds.has(c.pictureId));
+
+  if (toInsert.length > 0) {
+    const insertAll = sqlite.transaction((items: Candidate[]) => {
+      const now = new Date().toISOString();
+      for (const { pictureId, feature } of items) {
+        const props = (feature.properties as Record<string, unknown>) || {};
+        const assets = (feature.assets as Record<string, unknown>) || {};
+        const geometry = feature.geometry as Record<string, unknown> | null;
+
+        const sdAsset = assets.sd as Record<string, unknown> | undefined;
+        const hdAsset = assets.hd as Record<string, unknown> | undefined;
+        const thumbAsset = assets.thumb as Record<string, unknown> | undefined;
+
+        const sdUrl = (sdAsset?.href as string) || `${baseForUrls}/pictures/${pictureId}/sd.jpg`;
+        const hdUrl = (hdAsset?.href as string) || `${baseForUrls}/pictures/${pictureId}/hd.jpg`;
+        const thumbUrl = (thumbAsset?.href as string) || `${baseForUrls}/pictures/${pictureId}/thumb.jpg`;
+
+        const coords = geometry?.coordinates as number[] | undefined;
+        const lat = coords?.[1] ?? null;
+        const lon = coords?.[0] ?? null;
+
+        const dateCaptured = (props.datetime as string) || (props.created as string) || null;
+        const seq = props['panoramax:sequence'] as string;
+        const locationName = seq ? `Sequence ${seq.slice(0, 8)}` : `Panoramax Photo ${pictureId.slice(0, 8)}`;
+
+        const internalId = `pic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        stmts.insertPicture.run(internalId, pictureId, instanceUrl, sdUrl, hdUrl, thumbUrl, locationName, lat, lon, dateCaptured, now);
+        added++;
+      }
+    });
+    insertAll(toInsert);
+  }
 
   const totalRow = stmts.countPictures.get() as Row;
   res.json({ success: true, added, duplicatesSkipped, totalInDatabase: totalRow.count as number });
@@ -831,8 +880,8 @@ app.get('/api/export', wrap((req, res) => {
 
   if (ids) {
     const placeholders = ids.map(() => '?').join(',');
-    pictureQuery += ` AND (id IN (${placeholders}) OR LOWER(picture_id) IN (${placeholders}))`;
-    pictureParams.push(...ids, ...ids.map((id: string) => id.toLowerCase()));
+    pictureQuery += ` AND (id IN (${placeholders}) OR picture_id IN (${placeholders}))`;
+    pictureParams.push(...ids, ...ids);
   } else {
     const status = req.query.status as string || '';
     const search = req.query.search as string || '';

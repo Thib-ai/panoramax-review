@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Image, Upload, Layers, Settings, LogOut, User as UserIcon, Sparkles, Wifi,
+  Image, Upload, Layers, Settings, LogOut, User as UserIcon, Sparkles,
 } from 'lucide-react';
 import type { User, PictureItem, AppStats, AppSettings, UndoItem } from './types';
 import { bootstrapSession } from './services/session';
@@ -355,25 +355,6 @@ export default function App() {
           >
             <Layers className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-900" />
             <span className="hidden md:inline">Dashboard</span>
-          </button>
-
-          <button
-            id="btn-header-cellular-saver"
-            type="button"
-            onClick={() => {
-              const next = !settings.cellularSaverMode;
-              setSettings({ ...settings, cellularSaverMode: next });
-              cacheManager.setCellularSaver(next);
-            }}
-            title="Cellular Data Saver"
-            className={`p-1.5 flex items-center gap-1 rounded-lg sm:rounded-xl text-[11px] font-medium border transition-all ${
-              settings.cellularSaverMode
-                ? 'bg-amber-500/15 text-amber-900 border-amber-300'
-                : 'bg-slate-100 text-slate-600 border-slate-200/80 hover:bg-slate-200'
-            }`}
-          >
-            <Wifi className={`w-3.5 h-3.5 ${settings.cellularSaverMode ? 'text-amber-700' : 'text-slate-500'}`} />
-            <span className="hidden lg:inline">{settings.cellularSaverMode ? 'Data Saver: ON' : 'Data Saver'}</span>
           </button>
 
           <button

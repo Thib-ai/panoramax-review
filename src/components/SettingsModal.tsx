@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Settings, CheckCircle2, Smartphone, WifiOff, Trash2, Save, X, Plus } from 'lucide-react';
 import type { AppSettings } from '../types';
 import { cacheManager } from '../services/cacheManager';
-import { updateAppSettings } from '../services/api';
+import { updateAppSettings, fetchPictureQueue } from '../services/api';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -65,8 +65,9 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
   const handleSave = async () => {
     setSaving(true);
     try {
+      const clamped = Math.min(Math.max(cacheSize, 5), 500);
       const merged: AppSettings = {
-        cacheSize: Math.min(Math.max(cacheSize, 5), 500),
+        cacheSize: clamped,
         instances,
         activeInstance,
         autoFetchApi: settings.autoFetchApi,
@@ -76,6 +77,23 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
       cacheManager.setCellularSaver(cellularSaver);
       onSave(result);
       setMessage('Settings saved successfully.');
+
+      // If the cache limit was raised beyond what's currently cached, start
+      // filling the extra slots immediately (unless cellular saver is on).
+      const currentlyCached = await cacheManager.getCachedCount();
+      if (!cellularSaver && clamped > currentlyCached) {
+        try {
+          const instance = activeInstance || undefined;
+          const { queue } = await fetchPictureQueue(clamped, instance);
+          if (queue.length > 0) {
+            cacheManager.prefetchPictures(queue, clamped);
+            const after = await cacheManager.getCachedCount();
+            setCachedCount(after);
+          }
+        } catch {
+          // Prefetch is best-effort; don't surface failures in the settings modal.
+        }
+      }
     } catch {
       setMessage('Failed to save settings.');
     } finally {
