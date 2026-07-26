@@ -30,9 +30,23 @@ There is **no test runner**. The only "tests" are the curl-based smoke checks in
 
 ## Review & undo flow
 
-- Submitting a review (`submitPictureReview` in `src/services/api.ts`, called from `handlePassOk` / `handleFlagErrorSubmit` in `src/App.tsx`) advances the queue and pushes an `UndoItem` onto `undoStack` (capped at 3, shown by `src/components/UndoToast.tsx`). The `UndoItem` carries the reviewed `PictureItem` snapshot so undo can restore it to the stage.
-- Undo (`handleUndoReview` in `src/App.tsx`, triggered by the toast button or the `Z` / `U` / `Ctrl+Z` shortcut) calls `undoPictureReview`, removes the item from `undoStack`, restores the undone picture to `currentPicture`, and pushes the displaced current picture back to the front of `queue` — so the user returns to where they were before advancing.
-- The ring buffer `recentIdsRef` in `src/App.tsx` (limit 200) is sent as `exclude` to `/api/pictures/queue` so refills don't re-show images we just saw (both skip and review count). Undo does **not** re-add the picture's ID to this set, since the picture is being shown again by user action, not re-served by the queue.
+- Submitting a review (`submitPictureReview` in `src/services/api.ts`, called from `handlePassOk` / `handleFlagErrorSubmit` in `src/App.tsx`) marks the reviewed picture as acted-on this session, records its `sdUrl` for later cache eviction (see Session-cache eviction below), and sets the single `UndoState` in `src/App.tsx`. `UndoState` carries the reviewed `PictureItem` snapshot plus a `previousUndo` link, so repeated undo presses walk back through the session's review history.
+- Undo (`handleUndoReview` in `src/App.tsx`, triggered by the toast button or the `Z` / `U` / `Ctrl+Z` shortcut) calls `undoPictureReview`, restores the undone picture to `currentPicture`, pushes the displaced current picture back to the front of `queue`, and sets `undo` to `previousUndo` — so the user returns to where they were before advancing, and the undo button now targets the picture before that. The chain bottoms out at the session's first picture (never undoes past it). Undo state lives in memory only; a reload clears it (new session boundary).
+- `src/components/UndoToast.tsx` renders a single fixed-position button that fades out ~5s after the most recent review; each new review resets the fade timer.
+
+## Cache-first queue model
+
+- The on-device cache is the primary source of truth for the displayed queue. `advanceToNextPicture` and `loadInitialAppData` in `src/App.tsx` pick the next picture from the in-memory `queue` first, then from the persistent `panoramax_cached_picture_queue` list in `localStorage` (`getCachedPictureQueue` / `mergeCachedPictureQueue` in `src/services/offlineQueue.ts`), skipping anything in `actedThisSessionRef` (reviews + skips both count). The server's `/api/pictures/queue` is a **background refill** used only when the cache runs dry (and, when online, to top the cache back up to `cacheSize`).
+- This means the app keeps showing cached images offline even after the in-memory queue drains, instead of jumping to "Image not cached" placeholders. Reviews are stored locally via the existing offline-queue mechanism and synced when back online.
+
+## Session-cache eviction
+
+- On each review, the picture's `sdUrl` is appended to `panoramax_session_reviewed_urls` in `localStorage` (alongside a `panoramax_session_id` stamped on boot).
+- On app boot (`enforceSessionBoundary` in `src/App.tsx`, called from `loadInitialAppData`): if the stored session id differs from a freshly generated one, the previously-reviewed URLs are evicted from the Cache API (`cacheManager.evictUrls` in `src/services/cacheManager.ts`), then the list is cleared and the new session id is written. Within a session, reviewed images stay cached (undo needs them); across a reload (new session), they're evicted.
+
+## Settings cached-count badge
+
+- `cacheManager.subscribe` in `src/services/cacheManager.ts` only pushes the count to a subscriber once the Cache API enumeration (`init`) has completed (tracked via the `initialized` flag), so the badge in `src/components/SettingsModal.tsx` no longer shows a stale 0 on first open after a refresh. `cacheManager.warmUp()` is called eagerly on app boot to make the count ready sooner.
 
 ## Release
 

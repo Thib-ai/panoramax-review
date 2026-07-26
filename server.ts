@@ -172,6 +172,8 @@ function mapToReviewRecord(row: Row): ReviewRecord {
     errorReason: row.error_reason as string | undefined,
     comment: row.comment as string | undefined,
     reviewedAt: row.reviewed_at as string,
+    sdUrl: row.sd_url as string | undefined,
+    instanceUrl: row.instance_url as string | undefined,
   };
 }
 
@@ -716,22 +718,33 @@ app.get('/api/reviews', wrap((req, res) => {
   if (!requireAuth(req, res)) return;
   const statusFilter = req.query.status as string | undefined;
   const search = req.query.search as string | undefined;
+  const sort = req.query.sort as string | undefined;
+  const sortDir = (req.query.sortDir as string | undefined)?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-  let query = 'SELECT * FROM reviews WHERE 1=1';
+  const reviewSortMap: Record<string, string> = {
+    reviewedAt: 'r.reviewed_at',
+    pictureId: 'r.picture_id',
+    userName: 'r.user_name',
+    status: 'r.status',
+  };
+  const sortColumn = sort && reviewSortMap[sort] ? reviewSortMap[sort] : 'r.reviewed_at';
+
+  let query = `SELECT r.*, p.sd_url AS sd_url, p.instance_url AS instance_url
+    FROM reviews r LEFT JOIN pictures p ON p.picture_id = r.picture_id WHERE 1=1`;
   const params: unknown[] = [];
 
   if (statusFilter && (statusFilter === 'ok' || statusFilter === 'error')) {
-    query += ' AND status = ?';
+    query += ' AND r.status = ?';
     params.push(statusFilter);
   }
 
   if (search) {
-    query += ' AND (LOWER(picture_id) LIKE ? OR LOWER(user_name) LIKE ? OR LOWER(comment) LIKE ? OR LOWER(error_reason) LIKE ?)';
+    query += ' AND (LOWER(r.picture_id) LIKE ? OR LOWER(r.user_name) LIKE ? OR LOWER(r.comment) LIKE ? OR LOWER(r.error_reason) LIKE ?)';
     const term = `%${search.toLowerCase()}%`;
     params.push(term, term, term, term);
   }
 
-  query += ' ORDER BY reviewed_at DESC';
+  query += ` ORDER BY ${sortColumn} ${sortDir}`;
 
   const rows = sqlite.prepare(query).all(...params) as Row[];
   res.json({ reviews: rows.map(mapToReviewRecord) });
@@ -781,6 +794,19 @@ app.get('/api/dashboard/pictures', wrap((req, res) => {
   const checkedOff = req.query.checkedOff as string || 'all';
   const page = Math.max(Number(req.query.page) || 1, 1);
   const pageSize = Math.min(Math.max(Number(req.query.pageSize) || 25, 1), 250);
+  const sort = req.query.sort as string | undefined;
+  const sortDir = (req.query.sortDir as string | undefined)?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+  const dashboardSortMap: Record<string, string> = {
+    addedAt: 'added_at',
+    pictureId: 'picture_id',
+    status: 'status',
+    lastReviewedAt: 'last_reviewed_at',
+    instanceUrl: 'instance_url',
+    isCheckedOff: 'is_checked_off',
+    lastReviewer: 'last_reviewer',
+  };
+  const sortColumn = sort && dashboardSortMap[sort] ? dashboardSortMap[sort] : 'added_at';
 
   let query = 'SELECT * FROM pictures WHERE 1=1';
   const params: unknown[] = [];
@@ -820,7 +846,7 @@ app.get('/api/dashboard/pictures', wrap((req, res) => {
   const countRow = sqlite.prepare(query.replace('SELECT *', 'SELECT COUNT(*) as count')).get(...params) as Row;
   const filteredCount = countRow.count as number;
 
-  query += ' ORDER BY added_at DESC LIMIT ? OFFSET ?';
+  query += ` ORDER BY ${sortColumn} ${sortDir} LIMIT ? OFFSET ?`;
   params.push(pageSize, (page - 1) * pageSize);
 
   const rows = sqlite.prepare(query).all(...params) as Row[];

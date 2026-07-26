@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Layers, X, CheckSquare, Square, Check, Trash2, FileSpreadsheet, RefreshCw,
   History, ExternalLink, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight,
-  CheckCircle2, AlertTriangle, AlertCircle,
+  CheckCircle2, AlertTriangle, AlertCircle, ArrowUp, ArrowDown, ArrowUpDown,
 } from 'lucide-react';
 import type { PictureItem, ReviewRecord, AppStats } from '../types';
 import {
@@ -16,6 +16,8 @@ interface HistoryExplorerProps {
   stats: AppStats | null;
   knownInstances: string[];
 }
+
+type SortDir = 'asc' | 'desc';
 
 export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances }: HistoryExplorerProps) {
   const [tab, setTab] = useState<'dashboard' | 'timeline'>('dashboard');
@@ -37,17 +39,24 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
     reason: '',
     checkedOff: 'all',
   });
+  const [dashboardSort, setDashboardSort] = useState<{ key: string; dir: SortDir }>({ key: 'addedAt', dir: 'desc' });
+  const [timelineSort, setTimelineSort] = useState<{ key: string; dir: SortDir }>({ key: 'reviewedAt', dir: 'desc' });
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
       if (tab === 'dashboard') {
-        const result = await fetchDashboardPictures({ ...filters, page, pageSize });
+        const result = await fetchDashboardPictures({
+          ...filters, page, pageSize,
+          sort: dashboardSort.key, sortDir: dashboardSort.dir,
+        });
         setPictures(result.pictures);
         setTotalCount(result.totalCount);
         setFilteredCount(result.filteredCount);
       } else {
-        const recs = await fetchReviewHistory();
+        const recs = await fetchReviewHistory({
+          sort: timelineSort.key, sortDir: timelineSort.dir,
+        });
         setReviews(recs);
       }
     } catch {
@@ -55,7 +64,7 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
     } finally {
       setLoading(false);
     }
-  }, [tab, filters, page, pageSize]);
+  }, [tab, filters, page, pageSize, dashboardSort, timelineSort]);
 
   useEffect(() => {
     if (isOpen) loadData();
@@ -64,6 +73,14 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
   useEffect(() => {
     setPage(1);
   }, [filters]);
+
+  const toggleSort = (key: string, current: { key: string; dir: SortDir }, setter: (v: { key: string; dir: SortDir }) => void) => {
+    if (current.key === key) {
+      setter({ key, dir: current.dir === 'asc' ? 'desc' : 'asc' });
+    } else {
+      setter({ key, dir: 'asc' });
+    }
+  };
 
   const totalPages = Math.ceil(filteredCount / pageSize) || 1;
   const startItem = (page - 1) * pageSize + 1;
@@ -121,6 +138,12 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
     }
     window.open(`${import.meta.env.BASE_URL}api/export?${params.toString()}`, '_blank');
   };
+
+  const SortIcon = ({ active, dir }: { active: boolean; dir: SortDir }) => (
+    active
+      ? (dir === 'asc' ? <ArrowUp className="w-3 h-3 inline" /> : <ArrowDown className="w-3 h-3 inline" />)
+      : <ArrowUpDown className="w-3 h-3 inline opacity-30" />
+  );
 
   if (!isOpen) return null;
 
@@ -258,7 +281,10 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                       <input type="checkbox" checked={allSelectedOnPage} onChange={toggleSelectAll} className="rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer" />
                     </th>
                     <th className="w-24 px-3 py-2">
-                      Checked Off
+                      <button type="button" onClick={() => toggleSort('isCheckedOff', dashboardSort, setDashboardSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Checked Off
+                        <SortIcon active={dashboardSort.key === 'isCheckedOff'} dir={dashboardSort.dir} />
+                      </button>
                       <select value={filters.checkedOff} onChange={(e) => setFilters({ ...filters, checkedOff: e.target.value })}
                         className="mt-1 w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-normal normal-case text-slate-800 focus:outline-none focus:border-slate-900"
                       >
@@ -268,13 +294,19 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                       </select>
                     </th>
                     <th className="min-w-[160px] px-3 py-2">
-                      Picture ID
+                      <button type="button" onClick={() => toggleSort('pictureId', dashboardSort, setDashboardSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Picture ID
+                        <SortIcon active={dashboardSort.key === 'pictureId'} dir={dashboardSort.dir} />
+                      </button>
                       <input type="text" placeholder="Filter ID..." value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })}
                         className="mt-1 w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-mono font-normal normal-case text-slate-800 focus:outline-none focus:border-slate-900"
                       />
                     </th>
                     <th className="min-w-[120px] px-3 py-2">
-                      Review Status
+                      <button type="button" onClick={() => toggleSort('status', dashboardSort, setDashboardSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Review Status
+                        <SortIcon active={dashboardSort.key === 'status'} dir={dashboardSort.dir} />
+                      </button>
                       <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}
                         className="mt-1 w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-normal normal-case text-slate-800 focus:outline-none focus:border-slate-900"
                       >
@@ -292,7 +324,10 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                       />
                     </th>
                     <th className="min-w-[140px] px-3 py-2">
-                      Panoramax API
+                      <button type="button" onClick={() => toggleSort('instanceUrl', dashboardSort, setDashboardSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Panoramax API
+                        <SortIcon active={dashboardSort.key === 'instanceUrl'} dir={dashboardSort.dir} />
+                      </button>
                       <select value={filters.instance} onChange={(e) => setFilters({ ...filters, instance: e.target.value })}
                         className="mt-1 w-full bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-normal normal-case text-slate-800 focus:outline-none focus:border-slate-900"
                       >
@@ -303,7 +338,10 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                       </select>
                     </th>
                     <th className="min-w-[120px] px-3 py-2 text-right">
-                      Reviewer / Date
+                      <button type="button" onClick={() => toggleSort('lastReviewedAt', dashboardSort, setDashboardSort)} className="flex items-center gap-1 hover:text-slate-900 ml-auto">
+                        Reviewer / Date
+                        <SortIcon active={dashboardSort.key === 'lastReviewedAt'} dir={dashboardSort.dir} />
+                      </button>
                     </th>
                   </tr>
                 </thead>
@@ -402,11 +440,27 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
               <table className="w-full text-left text-xs text-slate-700 border-collapse">
                 <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase sticky top-0 z-10">
                   <tr>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Picture ID</th>
+                    <th className="px-3 py-2">
+                      <button type="button" onClick={() => toggleSort('status', timelineSort, setTimelineSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Status <SortIcon active={timelineSort.key === 'status'} dir={timelineSort.dir} />
+                      </button>
+                    </th>
+                    <th className="px-3 py-2">
+                      <button type="button" onClick={() => toggleSort('pictureId', timelineSort, setTimelineSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Picture ID <SortIcon active={timelineSort.key === 'pictureId'} dir={timelineSort.dir} />
+                      </button>
+                    </th>
                     <th className="px-3 py-2">Details / Comment</th>
-                    <th className="px-3 py-2">Reviewer</th>
-                    <th className="px-3 py-2 text-right">Date</th>
+                    <th className="px-3 py-2">
+                      <button type="button" onClick={() => toggleSort('userName', timelineSort, setTimelineSort)} className="flex items-center gap-1 hover:text-slate-900">
+                        Reviewer <SortIcon active={timelineSort.key === 'userName'} dir={timelineSort.dir} />
+                      </button>
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      <button type="button" onClick={() => toggleSort('reviewedAt', timelineSort, setTimelineSort)} className="flex items-center gap-1 hover:text-slate-900 ml-auto">
+                        Date <SortIcon active={timelineSort.key === 'reviewedAt'} dir={timelineSort.dir} />
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -423,7 +477,26 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 font-mono text-slate-900 text-[11px]">{r.pictureId.substring(0, 12)}...</td>
+                      <td className="px-3 py-2">
+                        <div
+                          className="group/pid flex items-center gap-1 font-mono text-slate-900 font-semibold cursor-pointer"
+                          onMouseEnter={(e) => {
+                            if (!r.sdUrl) return;
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setHoveredThumbnail({ url: r.sdUrl, id: r.pictureId, top: rect.top - 20, left: rect.right + 12 });
+                          }}
+                          onMouseLeave={() => setHoveredThumbnail(null)}
+                        >
+                          <span className="truncate max-w-[140px] sm:max-w-[200px] group-hover/pid:text-indigo-600 group-hover/pid:underline decoration-indigo-300">
+                            {r.pictureId.substring(0, 12)}...
+                          </span>
+                          {r.sdUrl && (
+                            <a href={r.sdUrl} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-indigo-600 shrink-0">
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-slate-600 max-w-xs truncate">{r.comment || <span className="italic text-slate-400">No notes</span>}</td>
                       <td className="px-3 py-2 text-slate-600">{r.userName}</td>
                       <td className="px-3 py-2 text-right text-[11px] text-slate-400">{new Date(r.reviewedAt).toLocaleString()}</td>

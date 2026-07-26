@@ -2,13 +2,17 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Image, Upload, Layers, Settings, LogOut, User as UserIcon, Sparkles,
 } from 'lucide-react';
-import type { User, PictureItem, AppStats, AppSettings, UndoItem } from './types';
+import type { User, PictureItem, AppStats, AppSettings, UndoState } from './types';
 import { bootstrapSession } from './services/session';
 import {
   fetchPictureQueue, fetchAppStats, fetchAppSettings, updateAppSettings,
   submitPictureReview, undoPictureReview, syncOfflineQueue, logoutUser,
 } from './services/api';
-import { getOfflineCount, cachePictureQueue } from './services/offlineQueue';
+import {
+  getOfflineCount, mergeCachedPictureQueue, getCachedPictureQueue,
+  newSessionId, getSessionId, setSessionId,
+  getSessionReviewedUrls, addSessionReviewedUrl, clearSessionReviewedUrls,
+} from './services/offlineQueue';
 import { cacheManager } from './services/cacheManager';
 import AuthScreen from './components/AuthScreen';
 import ImageStage from './components/ImageStage';
@@ -41,26 +45,25 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [submittingReview, setSubmittingReview] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [undoStack, setUndoStack] = useState<UndoItem[]>([]);
+  const [undo, setUndo] = useState<UndoState | null>(null);
   const [isUndoLoading, setIsUndoLoading] = useState(false);
 
   const userRef = useRef(user);
   userRef.current = user;
 
-  // Ring buffer of recently-shown picture IDs, passed to /api/pictures/queue
-  // so refills don't re-show images we just saw (skip / review both count).
-  const recentIdsRef = useRef<Set<string>>(new Set());
-  const RECENT_LIMIT = 200;
-  const trackRecent = useCallback((pic: PictureItem | null) => {
-    if (!pic) return;
-    const set = recentIdsRef.current;
-    set.add(pic.pictureId);
-    if (set.size > RECENT_LIMIT) {
-      // Drop oldest by iterating and removing until back under limit.
-      // Set preserves insertion order, so first entries are oldest.
-      const it = set.values();
-      while (set.size > RECENT_LIMIT) set.delete(it.next().value!);
-    }
+  // PictureIds reviewed or skipped this session. Used to pick the next picture
+  // from the cached list without re-showing ones the user has already acted on.
+  // Reset on reload (new session boundary).
+  const actedThisSessionRef = useRef<Set<string>>(new Set());
+
+  // Refill coordination: a single in-flight background refill prevents the
+  // app from hammering /api/pictures/queue on every advance.
+  const refillingRef = useRef(false);
+
+  useEffect(() => {
+    // Eagerly enumerate the Cache API so the cached-count badge in Settings
+    // is correct on first open (fixes the "shows 0 after refresh" bug).
+    cacheManager.warmUp();
   }, []);
 
   useEffect(() => {
@@ -113,27 +116,55 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
-  const loadInitialAppData = useCallback(async (instanceFilter?: string) => {
-    try {
-      const instance = instanceFilter || settings.activeInstance || undefined;
-      const [s, st, q] = await Promise.all([
-        fetchAppStats(),
-        fetchAppSettings(),
-        fetchPictureQueue(settings.cacheSize, instance, Array.from(recentIdsRef.current)),
-      ]);
-      setStats(s);
-      setSettings(st);
-      setQueue(q.queue);
-      if (q.queue.length > 0) {
-        setCurrentPicture(q.queue[0]);
-        setQueue(q.queue.slice(1));
-        trackRecent(q.queue[0]);
+  // Session-boundary cache eviction: on each app boot, if the stored session
+  // id differs from a freshly generated one, delete cached responses for URLs
+  // that were reviewed during the *previous* session, then clear the list and
+  // stamp the new session id. Within a session, reviewed images stay cached
+  // (undo needs them).
+  const enforceSessionBoundary = useCallback(async () => {
+    const stored = getSessionId();
+    const fresh = newSessionId();
+    if (stored && stored !== fresh) {
+      const reviewedUrls = getSessionReviewedUrls();
+      if (reviewedUrls.length > 0) {
+        await cacheManager.evictUrls(reviewedUrls);
       }
-      cacheManager.setCellularSaver(st.cellularSaverMode || false);
-      cacheManager.prefetchPictures(q.queue, st.cacheSize);
-      cachePictureQueue(q.queue);
-    } catch { /* ignore */ }
-  }, [settings.cacheSize, settings.activeInstance]);
+      clearSessionReviewedUrls();
+    }
+    setSessionId(fresh);
+  }, []);
+
+  const loadInitialAppData = useCallback(async (instanceFilter?: string) => {
+    await enforceSessionBoundary();
+    const instance = instanceFilter || settings.activeInstance || undefined;
+
+    // Settings + stats are best-effort; the cache is the source of truth for
+    // the queue, so a network failure here must NOT blank the stage.
+    fetchAppSettings()
+      .then((st) => {
+        setSettings(st);
+        cacheManager.setCellularSaver(st.cellularSaverMode || false);
+      })
+      .catch(() => { /* offline: keep defaults */ });
+    loadStats();
+
+    const cached = getCachedPictureQueue() || [];
+    const acted = actedThisSessionRef.current;
+    const fresh = cached.filter((p) => !acted.has(p.pictureId));
+    if (fresh.length > 0) {
+      const [first, ...rest] = fresh;
+      setCurrentPicture(first);
+      setQueue(rest);
+    } else {
+      // Nothing usable locally — fall back to a network fetch (which will
+      // also populate the cache for next time).
+      await refillQueueFromServer(instance, true);
+    }
+
+    // Background refill to keep the cache topped up regardless of where the
+    // initial queue came from.
+    maybeRefillInBackground(instance);
+  }, [settings.activeInstance, enforceSessionBoundary, loadStats]);
 
   useEffect(() => {
     if (user) {
@@ -141,98 +172,165 @@ export default function App() {
     }
   }, [user, loadInitialAppData]);
 
+  const refillQueueFromServer = useCallback(async (instance: string | undefined, showFirst: boolean): Promise<boolean> => {
+    if (refillingRef.current) return false;
+    refillingRef.current = true;
+    let supplied = false;
+    try {
+      const exclude = Array.from(actedThisSessionRef.current);
+      const result = await fetchPictureQueue(settings.cacheSize, instance, exclude);
+      if (result.queue.length > 0) {
+        mergeCachedPictureQueue(result.queue);
+        cacheManager.prefetchPictures(result.queue, settings.cacheSize);
+        const fresh = result.queue.filter((p) => !actedThisSessionRef.current.has(p.pictureId));
+        if (fresh.length > 0) {
+          supplied = true;
+          if (showFirst) {
+            const [first, ...rest] = fresh;
+            setCurrentPicture(first);
+            setQueue(rest);
+          } else {
+            setQueue((prev) => [...prev, ...fresh]);
+          }
+        }
+      }
+    } catch {
+      // Offline or auth issue — the cached list is the fallback, handled by callers.
+    } finally {
+      refillingRef.current = false;
+    }
+    return supplied;
+  }, [settings.cacheSize]);
+
+  const maybeRefillInBackground = useCallback((instance: string | undefined) => {
+    if (!navigator.onLine) return;
+    const remaining = queue.length;
+    if (remaining >= settings.cacheSize) return;
+    void refillQueueFromServer(instance, false);
+  }, [queue.length, settings.cacheSize, refillQueueFromServer]);
+
   const advanceToNextPicture = useCallback(async () => {
+    // Mark the picture we're leaving as acted-upon this session (skip counts),
+    // so it won't be re-served from the cache on a later refill.
+    if (currentPicture) actedThisSessionRef.current.add(currentPicture.pictureId);
+
+    const acted = actedThisSessionRef.current;
+    const instance = settings.activeInstance || undefined;
+
+    // 1. In-memory queue (sourced from the cache).
     const q = queue;
     if (q.length > 0) {
       const next = q[0];
       setCurrentPicture(next);
       setQueue(q.slice(1));
-      trackRecent(next);
-      cacheManager.prefetchPictures(q.slice(1), settings.cacheSize);
     } else {
-      setLoadingPicture(true);
-      try {
-        const instance = settings.activeInstance || undefined;
-        const result = await fetchPictureQueue(settings.cacheSize, instance, Array.from(recentIdsRef.current));
-        if (result.queue.length > 0) {
-          setCurrentPicture(result.queue[0]);
-          setQueue(result.queue.slice(1));
-          trackRecent(result.queue[0]);
-          cacheManager.prefetchPictures(result.queue, settings.cacheSize);
-          cachePictureQueue(result.queue);
-        } else {
-          setCurrentPicture(null);
+      // 2. Drain from the persistent cached-picture list in localStorage.
+      const cached = getCachedPictureQueue() || [];
+      const fresh = cached.filter((p) => !acted.has(p.pictureId));
+      if (fresh.length > 0) {
+        const [first, ...rest] = fresh;
+        setCurrentPicture(first);
+        setQueue(rest);
+      } else if (navigator.onLine) {
+        // 3. Last resort: ask the server for a fresh batch (also refills cache).
+        setLoadingPicture(true);
+        try {
+          const supplied = await refillQueueFromServer(instance, true);
+          if (!supplied) {
+            setCurrentPicture(null);
+          }
+        } finally {
+          setLoadingPicture(false);
         }
-      } catch {
+      } else {
         setCurrentPicture(null);
-      } finally {
-        setLoadingPicture(false);
       }
     }
+
+    // Background refill keeps the cache topped up while online.
+    maybeRefillInBackground(instance);
     loadStats();
-  }, [queue, settings.cacheSize, settings.activeInstance, loadStats]);
+  }, [currentPicture, queue, settings.cacheSize, settings.activeInstance, loadStats, refillQueueFromServer, maybeRefillInBackground]);
 
   const handlePassOk = useCallback(async () => {
     if (!currentPicture || !user) return;
     setSubmittingReview(true);
+    const reviewedPicture = currentPicture;
+    const previousUndo = undo;
     try {
       const result = await submitPictureReview(
-        currentPicture.pictureId, 'ok', undefined, undefined,
-        { id: user.id, username: user.username }, currentPicture,
+        reviewedPicture.pictureId, 'ok', undefined, undefined,
+        { id: user.id, username: user.username }, reviewedPicture,
       );
-      const undoItem: UndoItem = {
-        id: `undo_${Date.now()}`,
+      markReviewedAndTrackCache(reviewedPicture);
+      setUndo({
+        picture: reviewedPicture,
         reviewId: result.review.id,
-        pictureId: currentPicture.pictureId,
         label: 'OK',
         createdAt: Date.now(),
-        picture: currentPicture,
-      };
-      setUndoStack((prev) => [undoItem, ...prev].slice(0, 3));
+        previousUndo,
+      });
     } finally {
       setSubmittingReview(false);
       advanceToNextPicture();
     }
-  }, [currentPicture, user, advanceToNextPicture]);
+  }, [currentPicture, user, undo, advanceToNextPicture]);
 
   const handleFlagErrorSubmit = useCallback(async (reasonId: string, comment: string) => {
     if (!currentPicture || !user) return;
     setSubmittingReview(true);
     setIsErrorModalOpen(false);
+    const reviewedPicture = currentPicture;
+    const previousUndo = undo;
     try {
       const result = await submitPictureReview(
-        currentPicture.pictureId, 'error', reasonId, comment,
-        { id: user.id, username: user.username }, currentPicture,
+        reviewedPicture.pictureId, 'error', reasonId, comment,
+        { id: user.id, username: user.username }, reviewedPicture,
       );
-      const undoItem: UndoItem = {
-        id: `undo_${Date.now()}`,
+      markReviewedAndTrackCache(reviewedPicture);
+      setUndo({
+        picture: reviewedPicture,
         reviewId: result.review.id,
-        pictureId: currentPicture.pictureId,
         label: `Flag: ${reasonId}`,
         createdAt: Date.now(),
-        picture: currentPicture,
-      };
-      setUndoStack((prev) => [undoItem, ...prev].slice(0, 3));
+        previousUndo,
+      });
     } finally {
       setSubmittingReview(false);
       advanceToNextPicture();
     }
-  }, [currentPicture, user, advanceToNextPicture]);
+  }, [currentPicture, user, undo, advanceToNextPicture]);
 
-  const handleUndoReview = useCallback(async (item: UndoItem) => {
+  const markReviewedAndTrackCache = useCallback((pic: PictureItem) => {
+    actedThisSessionRef.current.add(pic.pictureId);
+    addSessionReviewedUrl(pic.sdUrl);
+  }, []);
+
+  const handleUndoReview = useCallback(async () => {
+    const item = undo;
+    if (!item) return;
     setIsUndoLoading(true);
+    const displaced = currentPicture;
     try {
-      await undoPictureReview(item.reviewId, item.pictureId);
-      setUndoStack((prev) => prev.filter((u) => u.id !== item.id));
-      if (currentPicture?.pictureId !== item.pictureId) {
-        setQueue((prev) => (currentPicture ? [currentPicture, ...prev] : prev));
+      await undoPictureReview(item.reviewId, item.picture.pictureId);
+      // Undoing removes the review; the picture is eligible to be shown again
+      // this session (e.g. if the user skips forward past it).
+      actedThisSessionRef.current.delete(item.picture.pictureId);
+      // Put the displaced current picture back at the front of the queue so
+      // the user returns to where they were before stepping back.
+      if (displaced && displaced.pictureId !== item.picture.pictureId) {
+        setQueue((prev) => [displaced, ...prev]);
       }
       setCurrentPicture(item.picture);
+      // Walk back one more step: the undo chain's previous entry becomes the
+      // new "previous image" target, so repeated undo presses keep walking
+      // back through the session history until it bottoms out (session first).
+      setUndo(item.previousUndo);
       loadStats();
     } finally {
       setIsUndoLoading(false);
     }
-  }, [loadStats, currentPicture]);
+  }, [undo, currentPicture, loadStats]);
 
   const handleLogout = useCallback(async () => {
     await logoutUser();
@@ -275,15 +373,15 @@ export default function App() {
         e.preventDefault();
         advanceToNextPicture();
       } else if (key === 'z' || key === 'Z' || key === 'u' || key === 'U' || ((e.ctrlKey || e.metaKey) && key === 'z')) {
-        if (undoStack.length > 0 && !isUndoLoading) {
+        if (undo && !isUndoLoading) {
           e.preventDefault();
-          handleUndoReview(undoStack[0]);
+          handleUndoReview();
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [isErrorModalOpen, isImportModalOpen, isHistoryOpen, isSettingsOpen, submittingReview, currentPicture, handlePassOk, handleUndoReview, undoStack, isUndoLoading]);
+  }, [isErrorModalOpen, isImportModalOpen, isHistoryOpen, isSettingsOpen, submittingReview, currentPicture, handlePassOk, handleUndoReview, undo, isUndoLoading]);
 
   if (authChecking) {
     return (
@@ -454,7 +552,8 @@ export default function App() {
       />
 
       <UndoToast
-        items={undoStack}
+        undo={undo}
+        canUndo={!!undo && !!undo.picture}
         isLoading={isUndoLoading}
         onUndo={handleUndoReview}
       />
