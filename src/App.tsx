@@ -7,11 +7,13 @@ import { bootstrapSession } from './services/session';
 import {
   fetchPictureQueue, fetchAppStats, fetchAppSettings, updateAppSettings,
   submitPictureReview, undoPictureReview, syncOfflineQueue, logoutUser,
+  fetchReviewedPictureIds,
 } from './services/api';
 import {
   getOfflineCount, mergeCachedPictureQueue, getCachedPictureQueue,
   newSessionId, getSessionId, setSessionId,
   getSessionReviewedUrls, addSessionReviewedUrl, clearSessionReviewedUrls,
+  removeFromCachedPictureQueue, pruneReviewedFromCachedQueue, getOfflineReviewPictureIds,
 } from './services/offlineQueue';
 import { cacheManager } from './services/cacheManager';
 import AuthScreen from './components/AuthScreen';
@@ -101,6 +103,12 @@ export default function App() {
         syncOfflineQueue().then((result) => {
           if (result.syncedCount > 0) {
             setOfflinePendingCount(getOfflineCount());
+            // Prune synced picture IDs from the cached queue so a later
+            // reload (or the same session's cache-first path) doesn't
+            // re-serve them.
+            if (result.syncedPictureIds.length > 0) {
+              pruneReviewedFromCachedQueue(result.syncedPictureIds);
+            }
             loadStats();
           }
         });
@@ -149,6 +157,18 @@ export default function App() {
     await enforceSessionBoundary();
     const instance = instanceFilter || settings.activeInstance || undefined;
 
+    // Prune the cached picture queue of pictures that already have a review.
+    // Offline reviews (in the offline queue) are always pruned; when online we
+    // also fetch the user's reviewed picture IDs from the server and prune
+    // those, so a reload never re-serves an already-reviewed picture.
+    pruneReviewedFromCachedQueue(getOfflineReviewPictureIds());
+    if (navigator.onLine) {
+      try {
+        const serverReviewedIds = await fetchReviewedPictureIds();
+        pruneReviewedFromCachedQueue(serverReviewedIds);
+      } catch { /* offline or auth hiccup: offline prune is still in effect */ }
+    }
+
     // Settings + stats are best-effort; the cache is the source of truth for
     // the queue, so a network failure here must NOT blank the stage.
     fetchAppSettings()
@@ -194,9 +214,15 @@ export default function App() {
       const exclude = Array.from(actedThisSessionRef.current);
       const result = await fetchPictureQueue(settings.cacheSize, instance, exclude);
       if (result.queue.length > 0) {
-        mergeCachedPictureQueue(result.queue);
-        cacheManager.prefetchPictures(result.queue, settings.cacheSize);
-        const fresh = result.queue.filter((p) => !actedThisSessionRef.current.has(p.pictureId));
+        // Don't (re-)merge pictures that have a pending offline review —
+        // they're already reviewed, just not yet synced.
+        const offlineReviewed = new Set(getOfflineReviewPictureIds());
+        const eligible = result.queue.filter((p) => !offlineReviewed.has(p.pictureId));
+        if (eligible.length > 0) {
+          mergeCachedPictureQueue(eligible);
+          cacheManager.prefetchPictures(eligible, settings.cacheSize);
+        }
+        const fresh = eligible.filter((p) => !actedThisSessionRef.current.has(p.pictureId));
         if (fresh.length > 0) {
           supplied = true;
           if (showFirst) {
@@ -336,6 +362,7 @@ export default function App() {
   const markReviewedAndTrackCache = useCallback((pic: PictureItem) => {
     actedThisSessionRef.current.add(pic.pictureId);
     addSessionReviewedUrl(pic.sdUrl);
+    removeFromCachedPictureQueue(pic.pictureId);
   }, []);
 
   const handleUndoReview = useCallback(async () => {

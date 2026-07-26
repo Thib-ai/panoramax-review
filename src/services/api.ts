@@ -184,6 +184,11 @@ export async function fetchReviewHistory(params?: { status?: string; search?: st
   return res.reviews;
 }
 
+export async function fetchReviewedPictureIds(): Promise<string[]> {
+  const reviews = await fetchReviewHistory();
+  return reviews.map((r) => r.pictureId);
+}
+
 export async function fetchAppStats(): Promise<AppStats> {
   return apiFetch('/api/stats');
 }
@@ -227,12 +232,13 @@ export async function deleteBatchPictures(pictureIds: string[]): Promise<{ succe
   });
 }
 
-export async function syncOfflineQueue(): Promise<{ syncedCount: number; failedCount: number }> {
+export async function syncOfflineQueue(): Promise<{ syncedCount: number; failedCount: number; syncedPictureIds: string[] }> {
   const reviews = getOfflineReviews();
-  if (reviews.length === 0) return { syncedCount: 0, failedCount: 0 };
+  if (reviews.length === 0) return { syncedCount: 0, failedCount: 0, syncedPictureIds: [] };
 
   let syncedCount = 0;
   let failedCount = 0;
+  const syncedPictureIds: string[] = [];
 
   for (const review of reviews) {
     try {
@@ -251,6 +257,7 @@ export async function syncOfflineQueue(): Promise<{ syncedCount: number; failedC
       });
       if (res.ok) {
         removeOfflineReview(review.id);
+        syncedPictureIds.push(review.pictureId);
         syncedCount++;
       } else {
         failedCount++;
@@ -260,7 +267,7 @@ export async function syncOfflineQueue(): Promise<{ syncedCount: number; failedC
     }
   }
 
-  return { syncedCount, failedCount };
+  return { syncedCount, failedCount, syncedPictureIds };
 }
 
 export function getProxyImageUrl(url: string): string {

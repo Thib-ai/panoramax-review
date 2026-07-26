@@ -101,6 +101,31 @@ export function getCachedPictureQueue(): PictureItem[] | null {
   }
 }
 
+export function removeFromCachedPictureQueue(pictureId: string): void {
+  const cached = getCachedPictureQueue();
+  if (!cached) return;
+  const filtered = cached.filter((p) => p.pictureId !== pictureId);
+  if (filtered.length !== cached.length) {
+    localStorage.setItem(CACHED_QUEUE_KEY, JSON.stringify(filtered));
+  }
+}
+
+export function pruneReviewedFromCachedQueue(reviewedIds: string[]): number {
+  const cached = getCachedPictureQueue();
+  if (!cached || cached.length === 0) return 0;
+  const reviewed = new Set(reviewedIds.map((id) => id.toLowerCase()));
+  const filtered = cached.filter((p) => !reviewed.has(p.pictureId.toLowerCase()));
+  const removed = cached.length - filtered.length;
+  if (removed > 0) {
+    localStorage.setItem(CACHED_QUEUE_KEY, JSON.stringify(filtered));
+  }
+  return removed;
+}
+
+export function getOfflineReviewPictureIds(): string[] {
+  return getOfflineReviews().map((r) => r.pictureId);
+}
+
 export function cacheStats(stats: AppStats) {
   localStorage.setItem(CACHED_STATS_KEY, JSON.stringify(stats));
 }
