@@ -6,6 +6,7 @@ class CacheManager {
   private cachedUrls: Set<string> = new Set();
   private cellularSaverActive = false;
   private initPromise: Promise<void> | null = null;
+  private initialized = false;
   private listeners: Set<(count: number) => void> = new Set();
 
   private async ensureInit() {
@@ -25,6 +26,7 @@ class CacheManager {
     } catch {
       // Cache API not available
     }
+    this.initialized = true;
     this.notify();
   }
 
@@ -35,9 +37,37 @@ class CacheManager {
 
   subscribe(listener: (count: number) => void): () => void {
     this.listeners.add(listener);
-    // Immediately push current count so the subscriber doesn't need a separate fetch.
-    listener(this.cachedUrls.size);
+    if (this.initialized) {
+      // Push the real count immediately if init has already completed.
+      listener(this.cachedUrls.size);
+    }
+    // If init is still in flight, the listener will be notified when init()
+    // calls notify() — so the subscriber never needs a separate fetch and
+    // never sees a stale 0 unless the cache is genuinely empty.
     return () => this.listeners.delete(listener);
+  }
+
+  async evictUrls(urls: string[]): Promise<number> {
+    if (urls.length === 0) return 0;
+    await this.ensureInit();
+    let removed = 0;
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      for (const url of urls) {
+        const deleted = await cache.delete(url);
+        if (deleted) removed++;
+        this.cachedUrls.delete(url);
+        // Also try the proxied variant, which is cached under a different key.
+        const proxyUrl = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/proxy-image?url=${encodeURIComponent(url)}`;
+        const deletedProxy = await cache.delete(proxyUrl);
+        if (deletedProxy) removed++;
+        this.cachedUrls.delete(proxyUrl);
+      }
+      this.notify();
+    } catch {
+      // Cache API not available
+    }
+    return removed;
   }
 
   async prefetchPictures(pictures: PictureItem[], maxCount = 10): Promise<number> {
@@ -103,6 +133,11 @@ class CacheManager {
   async getCachedCount(): Promise<number> {
     await this.ensureInit();
     return this.cachedUrls.size;
+  }
+
+  /** Kick off cache enumeration eagerly (e.g. on app boot). Safe to call repeatedly. */
+  warmUp(): Promise<void> {
+    return this.ensureInit();
   }
 
   async clearCache(): Promise<void> {

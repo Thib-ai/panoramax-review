@@ -173,11 +173,13 @@ export async function undoPictureReview(reviewId?: string, pictureId?: string): 
   });
 }
 
-export async function fetchReviewHistory(status?: string, search?: string): Promise<ReviewRecord[]> {
-  const params = new URLSearchParams();
-  if (status) params.set('status', status);
-  if (search) params.set('search', search);
-  const qs = params.toString();
+export async function fetchReviewHistory(params?: { status?: string; search?: string; sort?: string; sortDir?: 'asc' | 'desc' }): Promise<ReviewRecord[]> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set('status', params.status);
+  if (params?.search) sp.set('search', params.search);
+  if (params?.sort) sp.set('sort', params.sort);
+  if (params?.sortDir) sp.set('sortDir', params.sortDir);
+  const qs = sp.toString();
   const res = await apiFetch<{ reviews: ReviewRecord[] }>(`/api/reviews${qs ? `?${qs}` : ''}`);
   return res.reviews;
 }
@@ -206,6 +208,8 @@ export async function fetchDashboardPictures(params: DashboardFilterParams): Pro
   if (params.checkedOff && params.checkedOff !== 'all') sp.set('checkedOff', params.checkedOff);
   if (params.page) sp.set('page', String(params.page));
   if (params.pageSize) sp.set('pageSize', String(params.pageSize));
+  if (params.sort) sp.set('sort', params.sort);
+  if (params.sortDir) sp.set('sortDir', params.sortDir);
   return apiFetch(`/api/dashboard/pictures?${sp.toString()}`);
 }
 

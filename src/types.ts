@@ -38,6 +38,8 @@ export interface ReviewRecord {
   errorReason?: string;
   comment?: string;
   reviewedAt: string;
+  sdUrl?: string;
+  instanceUrl?: string;
 }
 
 export interface AppStats {
@@ -100,6 +102,21 @@ export interface UndoItem {
   picture: PictureItem;
 }
 
+/**
+ * Single-entry "previous image" undo state. `previousPicture` is the picture
+ * that was current before the most recent review (i.e. the one a single undo
+ * restores). `previousUndo` carries the snapshot to chain undos back through
+ * the session history; it is null when there is nothing further to undo
+ * (i.e. we've walked back to the session's first picture).
+ */
+export interface UndoState {
+  picture: PictureItem;
+  reviewId: string;
+  label: string;
+  createdAt: number;
+  previousUndo: UndoState | null;
+}
+
 export interface DashboardFilterParams {
   status?: string;
   search?: string;
@@ -108,4 +125,6 @@ export interface DashboardFilterParams {
   checkedOff?: string;
   page?: number;
   pageSize?: number;
+  sort?: string;
+  sortDir?: 'asc' | 'desc';
 }
