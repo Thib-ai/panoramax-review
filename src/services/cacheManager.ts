@@ -57,8 +57,7 @@ class CacheManager {
         const deleted = await cache.delete(url);
         if (deleted) removed++;
         this.cachedUrls.delete(url);
-        // Also try the proxied variant, which is cached under a different key.
-        const proxyUrl = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/proxy-image?url=${encodeURIComponent(url)}`;
+        const proxyUrl = this.proxyUrlFor(url);
         const deletedProxy = await cache.delete(proxyUrl);
         if (deletedProxy) removed++;
         this.cachedUrls.delete(proxyUrl);
@@ -68,6 +67,10 @@ class CacheManager {
       // Cache API not available
     }
     return removed;
+  }
+
+  private proxyUrlFor(url: string): string {
+    return `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/proxy-image?url=${encodeURIComponent(url)}`;
   }
 
   async prefetchPictures(pictures: PictureItem[], maxCount = 10): Promise<number> {
@@ -111,12 +114,12 @@ class CacheManager {
     }
 
     try {
-      const proxyUrl = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/proxy-image?url=${encodeURIComponent(url)}`;
+      const proxyUrl = this.proxyUrlFor(url);
       const response = await fetch(proxyUrl);
       if (response.ok) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(proxyUrl, response.clone());
-        this.cachedUrls.add(url);
+        this.cachedUrls.add(proxyUrl);
         this.notify();
         return true;
       }
@@ -127,7 +130,42 @@ class CacheManager {
   }
 
   isCached(url: string): boolean {
-    return this.cachedUrls.has(url);
+    if (this.cachedUrls.has(url)) return true;
+    return this.cachedUrls.has(this.proxyUrlFor(url));
+  }
+
+  async isUrlCached(url: string): Promise<boolean> {
+    await this.ensureInit();
+    if (this.isCached(url)) return true;
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      const hit = await cache.match(url) || await cache.match(this.proxyUrlFor(url));
+      if (hit) {
+        this.cachedUrls.add(url);
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+
+  async getCachedPictureUrls(urls: string[]): Promise<Set<string>> {
+    await this.ensureInit();
+    const result = new Set<string>();
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      for (const url of urls) {
+        if (this.cachedUrls.has(url) || this.cachedUrls.has(this.proxyUrlFor(url))) {
+          result.add(url);
+          continue;
+        }
+        const hit = await cache.match(url) || await cache.match(this.proxyUrlFor(url));
+        if (hit) {
+          this.cachedUrls.add(url);
+          result.add(url);
+        }
+      }
+    } catch { /* ignore */ }
+    return result;
   }
 
   async getCachedCount(): Promise<number> {

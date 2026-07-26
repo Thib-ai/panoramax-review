@@ -134,6 +134,17 @@ export default function App() {
     setSessionId(fresh);
   }, []);
 
+  // Filter the given pictures down to those whose image bytes are actually in
+  // the Cache API. Used so that offline operation never lands on a picture
+  // whose metadata is cached but whose image was never prefetched.
+  const filterViewable = useCallback(async (pictures: PictureItem[]): Promise<PictureItem[]> => {
+    if (pictures.length === 0) return pictures;
+    if (navigator.onLine) return pictures;
+    const urls = pictures.map((p) => p.sdUrl);
+    const cached = await cacheManager.getCachedPictureUrls(urls);
+    return pictures.filter((p) => cached.has(p.sdUrl));
+  }, []);
+
   const loadInitialAppData = useCallback(async (instanceFilter?: string) => {
     await enforceSessionBoundary();
     const instance = instanceFilter || settings.activeInstance || undefined;
@@ -151,14 +162,17 @@ export default function App() {
     const cached = getCachedPictureQueue() || [];
     const acted = actedThisSessionRef.current;
     const fresh = cached.filter((p) => !acted.has(p.pictureId));
-    if (fresh.length > 0) {
-      const [first, ...rest] = fresh;
+    const viewable = await filterViewable(fresh);
+    if (viewable.length > 0) {
+      const [first, ...rest] = viewable;
       setCurrentPicture(first);
       setQueue(rest);
-    } else {
+    } else if (navigator.onLine) {
       // Nothing usable locally — fall back to a network fetch (which will
       // also populate the cache for next time).
       await refillQueueFromServer(instance, true);
+    } else {
+      setCurrentPicture(null);
     }
 
     // Background refill to keep the cache topped up regardless of where the
@@ -220,15 +234,33 @@ export default function App() {
     // 1. In-memory queue (sourced from the cache).
     const q = queue;
     if (q.length > 0) {
-      const next = q[0];
-      setCurrentPicture(next);
-      setQueue(q.slice(1));
+      const candidates = navigator.onLine ? q : await filterViewable(q);
+      if (candidates.length > 0) {
+        const next = candidates[0];
+        const consumedId = next.pictureId;
+        setCurrentPicture(next);
+        setQueue(q.filter((p) => p.pictureId !== consumedId));
+      } else {
+        // All in-memory entries are uncached offline — fall through to the
+        // persistent localStorage queue (which may have cached entries).
+        const cached = getCachedPictureQueue() || [];
+        const fresh = cached.filter((p) => !acted.has(p.pictureId));
+        const viewable = await filterViewable(fresh);
+        if (viewable.length > 0) {
+          const [first, ...rest] = viewable;
+          setCurrentPicture(first);
+          setQueue(rest);
+        } else {
+          setCurrentPicture(null);
+        }
+      }
     } else {
       // 2. Drain from the persistent cached-picture list in localStorage.
       const cached = getCachedPictureQueue() || [];
       const fresh = cached.filter((p) => !acted.has(p.pictureId));
-      if (fresh.length > 0) {
-        const [first, ...rest] = fresh;
+      const viewable = await filterViewable(fresh);
+      if (viewable.length > 0) {
+        const [first, ...rest] = viewable;
         setCurrentPicture(first);
         setQueue(rest);
       } else if (navigator.onLine) {
@@ -250,7 +282,7 @@ export default function App() {
     // Background refill keeps the cache topped up while online.
     maybeRefillInBackground(instance);
     loadStats();
-  }, [currentPicture, queue, settings.cacheSize, settings.activeInstance, loadStats, refillQueueFromServer, maybeRefillInBackground]);
+  }, [currentPicture, queue, settings.cacheSize, settings.activeInstance, loadStats, refillQueueFromServer, maybeRefillInBackground, filterViewable]);
 
   const handlePassOk = useCallback(async () => {
     if (!currentPicture || !user) return;
