@@ -13,6 +13,9 @@ class CacheManager {
   private initPromise: Promise<void> | null = null;
   private initialized = false;
   private listeners: Set<(count: number) => void> = new Set();
+  // Serializes prefetch runs so that two concurrent callers can't both
+  // schedule downloads beyond the limit before either enforceLimit runs.
+  private prefetchChain: Promise<unknown> = Promise.resolve();
 
   private async ensureInit() {
     if (!this.initPromise) {
@@ -89,26 +92,46 @@ class CacheManager {
     if (this.cellularSaverActive) return 0;
     await this.ensureInit();
 
-    const limit = Math.min(maxCount, 500);
-    const toFetch = pictures.slice(0, limit).filter((p) => !this.cachedUrls.has(p.sdUrl));
-    if (toFetch.length === 0) return 0;
+    // Serialize against any in-flight prefetch so two concurrent callers
+    // (e.g. SettingsModal save + a background refill) don't both download
+    // up to `maxCount` images before either enforceLimit runs and the
+    // cache balloons to ~2x the configured limit.
+    const prev = this.prefetchChain;
+    let release!: () => void;
+    this.prefetchChain = new Promise<void>((res) => { release = res; });
+    await prev;
 
-    let fetched = 0;
-    const batchSize = 8;
-    const shouldDelay = toFetch.length > 25;
+    try {
+      // Re-check the limit against the *current* cache size now that any
+      // prior prefetch has settled. We only fetch the shortfall.
+      const limit = Math.min(maxCount, 500);
+      const shortfall = Math.max(0, limit - this.cachedUrlsOrder.length);
+      if (shortfall === 0) return 0;
+      const candidates = pictures
+        .slice(0, limit)
+        .filter((p) => !this.cachedUrls.has(p.sdUrl))
+        .slice(0, shortfall);
+      if (candidates.length === 0) return 0;
 
-    for (let i = 0; i < toFetch.length; i += batchSize) {
-      if (this.cellularSaverActive) break;
-      const batch = toFetch.slice(i, i + batchSize);
-      const results = await Promise.allSettled(
-        batch.map((pic) => this.fetchAndCache(pic.sdUrl))
-      );
-      fetched += results.filter((r) => r.status === 'fulfilled' && r.value).length;
-      if (shouldDelay && i + batchSize < toFetch.length) {
-        await new Promise((r) => setTimeout(r, 50));
+      let fetched = 0;
+      const batchSize = 8;
+      const shouldDelay = candidates.length > 25;
+
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        if (this.cellularSaverActive) break;
+        const batch = candidates.slice(i, i + batchSize);
+        const results = await Promise.allSettled(
+          batch.map((pic) => this.fetchAndCache(pic.sdUrl))
+        );
+        fetched += results.filter((r) => r.status === 'fulfilled' && r.value).length;
+        if (shouldDelay && i + batchSize < candidates.length) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
       }
+      return fetched;
+    } finally {
+      release();
     }
-    return fetched;
   }
 
   private async fetchAndCache(url: string): Promise<boolean> {

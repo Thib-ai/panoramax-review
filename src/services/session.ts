@@ -2,26 +2,31 @@ let token: string | null = null;
 const KEY = 'panoramax_session_token';
 const USER_KEY = 'panoramax_session_user';
 
+// Persist in localStorage (NOT sessionStorage) so that closing the tab and
+// reopening offline still restores the session. The token is re-validated
+// against the server on the next online request; an expired token simply
+// triggers the 401 → SSO redirect path in api.ts once back online.
+
 export function getToken(): string | null {
   if (token) return token;
-  token = sessionStorage.getItem(KEY);
+  token = localStorage.getItem(KEY);
   return token;
 }
 
 export function setToken(t: string) {
   token = t;
-  sessionStorage.setItem(KEY, t);
+  localStorage.setItem(KEY, t);
 }
 
 export function clearToken() {
   token = null;
-  sessionStorage.removeItem(KEY);
-  sessionStorage.removeItem(USER_KEY);
+  localStorage.removeItem(KEY);
+  localStorage.removeItem(USER_KEY);
 }
 
 export function getStoredUser(): BootUser | null {
   try {
-    const raw = sessionStorage.getItem(USER_KEY);
+    const raw = localStorage.getItem(USER_KEY);
     return raw ? JSON.parse(raw) as BootUser : null;
   } catch {
     return null;
@@ -29,7 +34,7 @@ export function getStoredUser(): BootUser | null {
 }
 
 export function setStoredUser(user: BootUser) {
-  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export interface BootUser {

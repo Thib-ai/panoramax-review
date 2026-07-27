@@ -32,9 +32,25 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
       setMessage('');
       const conn = (navigator as any).connection;
       if (conn) {
-        const isCell = conn.type === 'cellular' || conn.saveData || ['2g', '3g'].includes(conn.effectiveType);
+        const isCell = conn.type === 'cellular' || conn.saveData === true ||
+          ['slow-2g', '2g', '3g'].includes(conn.effectiveType);
         setIsCellular(isCell);
       }
+      // Update the Network Information API listener so the banner reacts
+      // live when the connection changes (e.g. wifi → mobile hotspot).
+      const handler = () => {
+        const c = (navigator as any).connection;
+        if (!c) return;
+        const isCell = c.type === 'cellular' || c.saveData === true ||
+          ['slow-2g', '2g', '3g'].includes(c.effectiveType);
+        setIsCellular(isCell);
+      };
+      const c = (navigator as any).connection;
+      if (c) c.addEventListener?.('change', handler);
+      return () => {
+        const c2 = (navigator as any).connection;
+        c2?.removeEventListener?.('change', handler);
+      };
     }
   }, [isOpen, settings]);
 
