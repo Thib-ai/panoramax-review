@@ -14,6 +14,7 @@ import {
   newSessionId, getSessionId, setSessionId,
   getSessionReviewedUrls, addSessionReviewedUrl, clearSessionReviewedUrls,
   removeFromCachedPictureQueue, pruneReviewedFromCachedQueue, getOfflineReviewPictureIds,
+  cacheStats, getCachedStats, cacheAppSettings, getCachedAppSettings,
 } from './services/offlineQueue';
 import { cacheManager } from './services/cacheManager';
 import AuthScreen from './components/AuthScreen';
@@ -31,14 +32,15 @@ export default function App() {
   const [currentPicture, setCurrentPicture] = useState<PictureItem | null>(null);
   const [queue, setQueue] = useState<PictureItem[]>([]);
   const [loadingPicture, setLoadingPicture] = useState(false);
-  const [stats, setStats] = useState<AppStats | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({
-    cacheSize: 10,
-    instances: [],
-    activeInstance: '',
-    autoFetchApi: true,
-    cellularSaverMode: false,
-  });
+  const [stats, setStats] = useState<AppStats | null>(() => getCachedStats());
+  const [settings, setSettings] = useState<AppSettings>(() =>
+    getCachedAppSettings() ?? {
+      cacheSize: 10,
+      instances: [],
+      activeInstance: '',
+      autoFetchApi: true,
+      cellularSaverMode: false,
+    });
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [offlinePendingCount, setOfflinePendingCount] = useState(getOfflineCount());
   const [isErrorModalOpen, setIsErrorModalOpen] = useState(false);
@@ -77,7 +79,36 @@ export default function App() {
       setAuthChecking(false);
     })();
 
-    const handleOnline = () => setIsOnline(true);
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Reconnect: immediately re-fetch stats + settings (which were 503'd
+      // while offline) and flush the offline review queue instead of
+      // waiting up to 2.5s for the interval tick. The offline indicator
+      // otherwise stays amber until the next interval.
+      loadStats();
+      if (userRef.current) {
+        void (async () => {
+          try {
+            const st = await fetchAppSettings();
+            setSettings(st);
+            cacheAppSettings(st);
+            cacheManager.setCellularSaver(st.cellularSaverMode || false);
+          } catch { /* ignore */ }
+          const count = getOfflineCount();
+          setOfflinePendingCount(count);
+          if (count > 0) {
+            const result = await syncOfflineQueue();
+            if (result.syncedCount > 0) {
+              setOfflinePendingCount(getOfflineCount());
+              if (result.syncedPictureIds.length > 0) {
+                pruneReviewedFromCachedQueue(result.syncedPictureIds);
+              }
+              loadStats();
+            }
+          }
+        })();
+      }
+    };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -121,6 +152,7 @@ export default function App() {
     try {
       const s = await fetchAppStats();
       setStats(s);
+      cacheStats(s);
     } catch { /* ignore */ }
   }, []);
 
@@ -176,8 +208,9 @@ export default function App() {
       try {
         const st = await fetchAppSettings();
         setSettings(st);
+        cacheAppSettings(st);
         cacheManager.setCellularSaver(st.cellularSaverMode || false);
-      } catch { /* offline: keep defaults */ }
+      } catch { /* offline: keep cached/defaults */ }
     }
     loadStats();
 
@@ -437,6 +470,7 @@ export default function App() {
   const handleSettingsSaved = useCallback((s: AppSettings) => {
     const instanceChanged = s.activeInstance !== settings.activeInstance;
     setSettings(s);
+    cacheAppSettings(s);
     cacheManager.setCellularSaver(s.cellularSaverMode || false);
     if (instanceChanged) loadInitialAppData(s.activeInstance || undefined);
   }, [settings.activeInstance, loadInitialAppData]);
@@ -528,7 +562,9 @@ export default function App() {
               value={settings.instances.includes(settings.activeInstance) ? settings.activeInstance : ''}
               onChange={async (e) => {
                 const newVal = e.target.value;
-                setSettings({ ...settings, activeInstance: newVal });
+                const next = { ...settings, activeInstance: newVal };
+                setSettings(next);
+                cacheAppSettings(next);
                 await updateAppSettings({ activeInstance: newVal });
                 loadInitialAppData(newVal || undefined);
               }}

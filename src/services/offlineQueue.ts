@@ -1,8 +1,9 @@
-import type { ReviewStatus, OfflineReview, PictureItem, AppStats } from '../types';
+import type { ReviewStatus, OfflineReview, PictureItem, AppStats, AppSettings } from '../types';
 
 const QUEUE_KEY = 'panoramax_offline_reviews_queue';
 const CACHED_QUEUE_KEY = 'panoramax_cached_picture_queue';
 const CACHED_STATS_KEY = 'panoramax_cached_app_stats';
+const CACHED_SETTINGS_KEY = 'panoramax_cached_app_settings';
 const SESSION_ID_KEY = 'panoramax_session_id';
 const SESSION_REVIEWED_URLS_KEY = 'panoramax_session_reviewed_urls';
 
@@ -133,6 +134,18 @@ export function cacheStats(stats: AppStats) {
 export function getCachedStats(): AppStats | null {
   try {
     return JSON.parse(localStorage.getItem(CACHED_STATS_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+export function cacheAppSettings(settings: AppSettings): void {
+  localStorage.setItem(CACHED_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+export function getCachedAppSettings(): AppSettings | null {
+  try {
+    return JSON.parse(localStorage.getItem(CACHED_SETTINGS_KEY) || 'null');
   } catch {
     return null;
   }
