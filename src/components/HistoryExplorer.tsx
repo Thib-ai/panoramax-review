@@ -268,7 +268,7 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                 {selectedIds.size > 0
                   ? `Export CSV Report (${selectedIds.size} Selected)`
-                  : `Export CSV Report (Full List ${pictures.length})`
+                  : `Export CSV Report (Full List ${filteredCount})`
                 }
               </button>
             </div>
@@ -519,8 +519,8 @@ export default function HistoryExplorer({ isOpen, onClose, stats, knownInstances
           className="fixed z-50 pointer-events-none bg-slate-900/95 backdrop-blur-xs border border-slate-700/90 rounded-2xl p-2 shadow-2xl flex flex-col items-center w-56 sm:w-64 animate-fade-in"
           style={{ top: Math.min(hoveredThumbnail.top, window.innerHeight - 260), left: Math.min(hoveredThumbnail.left, window.innerWidth - 280) }}
         >
-          <div className="w-full h-36 sm:h-40 bg-slate-950 rounded-xl overflow-hidden border border-slate-800">
-            <img className="w-full h-full object-cover" src={hoveredThumbnail.url} alt="" loading="eager" />
+          <div className="w-full h-36 sm:h-40 bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
+            <img className="max-w-full max-h-full object-contain" src={hoveredThumbnail.url} alt="" loading="eager" />
           </div>
           <div className="flex items-center justify-between w-full mt-1.5 text-[11px] text-slate-300 font-mono px-1">
             <span className="truncate max-w-[120px]">{hoveredThumbnail.id.substring(0, 16)}...</span>

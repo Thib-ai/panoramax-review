@@ -4,6 +4,11 @@ const CACHE_NAME = 'panoramax-images-v1';
 
 class CacheManager {
   private cachedUrls: Set<string> = new Set();
+  // Insertion-order list mirroring `cachedUrls`. Used to evict the oldest
+  // entries when the cache exceeds the configured limit. The Cache API's
+  // `keys()` returns entries in insertion order, so on init we get the
+  // historical order for free; thereafter we maintain it on add/delete.
+  private cachedUrlsOrder: string[] = [];
   private cellularSaverActive = false;
   private initPromise: Promise<void> | null = null;
   private initialized = false;
@@ -22,6 +27,7 @@ class CacheManager {
       const keys = await cache.keys();
       for (const req of keys) {
         this.cachedUrls.add(req.url);
+        this.cachedUrlsOrder.push(req.url);
       }
     } catch {
       // Cache API not available
@@ -56,17 +62,23 @@ class CacheManager {
       for (const url of urls) {
         const deleted = await cache.delete(url);
         if (deleted) removed++;
-        this.cachedUrls.delete(url);
         const proxyUrl = this.proxyUrlFor(url);
         const deletedProxy = await cache.delete(proxyUrl);
         if (deletedProxy) removed++;
-        this.cachedUrls.delete(proxyUrl);
       }
-      this.notify();
+      this.removeFromOrder(urls);
+      this.removeFromOrder(urls.map((u) => this.proxyUrlFor(u)));
     } catch {
       // Cache API not available
     }
     return removed;
+  }
+
+  private removeFromOrder(urls: string[]) {
+    const toRemove = new Set(urls);
+    this.cachedUrls = new Set([...this.cachedUrls].filter((u) => !toRemove.has(u)));
+    this.cachedUrlsOrder = this.cachedUrlsOrder.filter((u) => !toRemove.has(u));
+    this.notify();
   }
 
   private proxyUrlFor(url: string): string {
@@ -105,8 +117,7 @@ class CacheManager {
       if (response.ok) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(url, response.clone());
-        this.cachedUrls.add(url);
-        this.notify();
+        this.addUrl(url);
         return true;
       }
     } catch {
@@ -119,14 +130,48 @@ class CacheManager {
       if (response.ok) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(proxyUrl, response.clone());
-        this.cachedUrls.add(proxyUrl);
-        this.notify();
+        this.addUrl(proxyUrl);
         return true;
       }
     } catch {
       // Both failed
     }
     return false;
+  }
+
+  private addUrl(url: string) {
+    if (!this.cachedUrls.has(url)) {
+      this.cachedUrls.add(url);
+      this.cachedUrlsOrder.push(url);
+    }
+    this.notify();
+  }
+
+  /**
+   * Evict the oldest cached entries until the cache contains at most
+   * `maxCount` entries. Called after each prefetch to keep the on-disk
+   * cache bounded by the configured `cacheSize` setting. Returns the
+   * number of entries removed.
+   */
+  async enforceLimit(maxCount: number): Promise<number> {
+    if (maxCount <= 0) return 0;
+    await this.ensureInit();
+    if (this.cachedUrlsOrder.length <= maxCount) return 0;
+    const toEvict = this.cachedUrlsOrder.slice(0, this.cachedUrlsOrder.length - maxCount);
+    if (toEvict.length === 0) return 0;
+    let removed = 0;
+    try {
+      const cache = await caches.open(CACHE_NAME);
+      for (const url of toEvict) {
+        if (await cache.delete(url)) removed++;
+        this.cachedUrls.delete(url);
+      }
+      this.cachedUrlsOrder = this.cachedUrlsOrder.slice(toEvict.length);
+      this.notify();
+    } catch {
+      // Cache API not available
+    }
+    return removed;
   }
 
   isCached(url: string): boolean {
@@ -182,6 +227,7 @@ class CacheManager {
     try {
       await caches.delete(CACHE_NAME);
       this.cachedUrls.clear();
+      this.cachedUrlsOrder = [];
       this.notify();
     } catch {
       // not available

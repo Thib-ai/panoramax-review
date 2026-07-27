@@ -88,6 +88,31 @@ function migrate() {
   // Safe under the picture_id UNIQUE constraint: any case collisions would have failed
   // to insert originally, so lowering cannot create new conflicts.
   sqlite.exec('UPDATE pictures SET picture_id = LOWER(picture_id) WHERE picture_id != LOWER(picture_id)');
+
+  // --- One-time error_reason category migration (added v1.2.7) ---
+  // The set of flag reasons was simplified to: privacy, bad_quality, orientation,
+  // copyright, other. Remap any legacy reason ids to the new vocabulary so existing
+  // reviews remain filterable and don't show as "unknown" in the UI.
+  // TODO: This migration block can be deleted a couple of versions after v1.2.7
+  // (once every deployed DB has been upgraded). Safe to keep until then because
+  // the CASE-WHEN is idempotent: rows already in the new vocabulary are no-ops.
+  sqlite.exec(`
+    UPDATE reviews SET error_reason = CASE
+      WHEN error_reason IN ('blur','lighting','obstruction') THEN 'bad_quality'
+      WHEN error_reason = 'location' THEN 'other'
+      WHEN error_reason IN ('privacy','orientation','copyright','other','bad_quality') THEN error_reason
+      WHEN error_reason IS NULL THEN NULL
+      ELSE 'other'
+    END WHERE error_reason IS NOT NULL;
+
+    UPDATE pictures SET last_error_reason = CASE
+      WHEN last_error_reason IN ('blur','lighting','obstruction') THEN 'bad_quality'
+      WHEN last_error_reason = 'location' THEN 'other'
+      WHEN last_error_reason IN ('privacy','orientation','copyright','other','bad_quality') THEN last_error_reason
+      WHEN last_error_reason IS NULL THEN NULL
+      ELSE 'other'
+    END WHERE last_error_reason IS NOT NULL;
+  `);
 }
 migrate();
 

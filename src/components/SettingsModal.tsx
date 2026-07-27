@@ -96,17 +96,21 @@ export default function SettingsModal({ isOpen, settings, onClose, onSave }: Set
 
       // If the cache limit was raised beyond what's currently cached, start
       // filling the extra slots immediately (unless cellular saver is on).
+      // If it was lowered, evict the excess so the on-disk cache matches.
       const currentlyCached = await cacheManager.getCachedCount();
       if (!cellularSaver && clamped > currentlyCached) {
         try {
           const instance = activeInstance || undefined;
           const { queue } = await fetchPictureQueue(clamped, instance);
           if (queue.length > 0) {
-            cacheManager.prefetchPictures(queue, clamped);
+            await cacheManager.prefetchPictures(queue, clamped);
+            await cacheManager.enforceLimit(clamped);
           }
         } catch {
           // Prefetch is best-effort; don't surface failures in the settings modal.
         }
+      } else if (clamped < currentlyCached) {
+        await cacheManager.enforceLimit(clamped);
       }
     } catch {
       setMessage('Failed to save settings.');

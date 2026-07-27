@@ -212,7 +212,13 @@ export default function App() {
     let supplied = false;
     try {
       const exclude = Array.from(actedThisSessionRef.current);
-      const result = await fetchPictureQueue(settings.cacheSize, instance, exclude);
+      // Fetch only the number of pictures needed to refill the *in-memory*
+      // queue back to cacheSize — not the full cacheSize every time. This
+      // prevents the in-memory queue from growing without bound across
+      // repeated refills and keeps the network cost of a refill proportional
+      // to how many pictures were actually consumed since the last refill.
+      const refillAmount = Math.max(1, settings.cacheSize - queue.length);
+      const result = await fetchPictureQueue(refillAmount, instance, exclude);
       if (result.queue.length > 0) {
         // Don't (re-)merge pictures that have a pending offline review —
         // they're already reviewed, just not yet synced.
@@ -220,7 +226,9 @@ export default function App() {
         const eligible = result.queue.filter((p) => !offlineReviewed.has(p.pictureId));
         if (eligible.length > 0) {
           mergeCachedPictureQueue(eligible);
-          cacheManager.prefetchPictures(eligible, settings.cacheSize);
+          await cacheManager.prefetchPictures(eligible, settings.cacheSize);
+          // Evict oldest entries so the on-disk cache never exceeds cacheSize.
+          await cacheManager.enforceLimit(settings.cacheSize);
         }
         const fresh = eligible.filter((p) => !actedThisSessionRef.current.has(p.pictureId));
         if (fresh.length > 0) {
@@ -230,7 +238,13 @@ export default function App() {
             setCurrentPicture(first);
             setQueue(rest);
           } else {
-            setQueue((prev) => [...prev, ...fresh]);
+            // Cap the in-memory queue at the configured cache size so it
+            // never grows unbounded across many refills.
+            setQueue((prev) => {
+              const combined = [...prev, ...fresh];
+              if (combined.length <= settings.cacheSize) return combined;
+              return combined.slice(combined.length - settings.cacheSize);
+            });
           }
         }
       }
@@ -240,11 +254,11 @@ export default function App() {
       refillingRef.current = false;
     }
     return supplied;
-  }, [settings.cacheSize]);
+  }, [settings.cacheSize, queue.length]);
 
-  const maybeRefillInBackground = useCallback((instance: string | undefined) => {
+  const maybeRefillInBackground = useCallback((instance: string | undefined, remainingOverride?: number) => {
     if (!navigator.onLine) return;
-    const remaining = queue.length;
+    const remaining = remainingOverride ?? queue.length;
     if (remaining >= settings.cacheSize) return;
     void refillQueueFromServer(instance, false);
   }, [queue.length, settings.cacheSize, refillQueueFromServer]);
@@ -259,13 +273,16 @@ export default function App() {
 
     // 1. In-memory queue (sourced from the cache).
     const q = queue;
+    let remainingAfterAdvance = q.length > 0 ? q.length - 1 : 0;
     if (q.length > 0) {
       const candidates = navigator.onLine ? q : await filterViewable(q);
       if (candidates.length > 0) {
         const next = candidates[0];
         const consumedId = next.pictureId;
         setCurrentPicture(next);
-        setQueue(q.filter((p) => p.pictureId !== consumedId));
+        const nextQueue = q.filter((p) => p.pictureId !== consumedId);
+        setQueue(nextQueue);
+        remainingAfterAdvance = nextQueue.length;
       } else {
         // All in-memory entries are uncached offline — fall through to the
         // persistent localStorage queue (which may have cached entries).
@@ -276,8 +293,10 @@ export default function App() {
           const [first, ...rest] = viewable;
           setCurrentPicture(first);
           setQueue(rest);
+          remainingAfterAdvance = rest.length;
         } else {
           setCurrentPicture(null);
+          remainingAfterAdvance = 0;
         }
       }
     } else {
@@ -289,6 +308,7 @@ export default function App() {
         const [first, ...rest] = viewable;
         setCurrentPicture(first);
         setQueue(rest);
+        remainingAfterAdvance = rest.length;
       } else if (navigator.onLine) {
         // 3. Last resort: ask the server for a fresh batch (also refills cache).
         setLoadingPicture(true);
@@ -305,8 +325,10 @@ export default function App() {
       }
     }
 
-    // Background refill keeps the cache topped up while online.
-    maybeRefillInBackground(instance);
+    // Background refill keeps the cache topped up while online. Pass the
+    // post-consume queue length so the check uses the up-to-date value
+    // instead of the stale closure value.
+    maybeRefillInBackground(instance, remainingAfterAdvance);
     loadStats();
   }, [currentPicture, queue, settings.cacheSize, settings.activeInstance, loadStats, refillQueueFromServer, maybeRefillInBackground, filterViewable]);
 

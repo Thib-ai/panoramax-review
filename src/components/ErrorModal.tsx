@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
-  AlertTriangle, X, CheckCircle, MessageSquare, EyeOff, Aperture, SunDim,
-  ShieldAlert, RotateCcw, MapPinOff, HelpCircle,
+  AlertTriangle, X, CheckCircle, MessageSquare, EyeOff, Aperture,
+  ShieldAlert, RotateCcw, HelpCircle,
 } from 'lucide-react';
 import { COMMON_ERROR_REASONS } from '../types';
 
@@ -14,7 +14,7 @@ interface ErrorModalProps {
 }
 
 const iconMap: Record<string, typeof EyeOff> = {
-  EyeOff, Aperture, SunDim, ShieldAlert, RotateCcw, MapPinOff, HelpCircle,
+  EyeOff, Aperture, ShieldAlert, RotateCcw, HelpCircle,
 };
 
 export default function ErrorModal({ pictureId, isOpen, submitting, onClose, onSubmit }: ErrorModalProps) {

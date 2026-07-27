@@ -76,11 +76,9 @@ export interface ErrorReasonOption {
 
 export const COMMON_ERROR_REASONS: ErrorReasonOption[] = [
   { id: 'privacy', label: 'Privacy Violation', description: 'Unblurred face or license plate visible', iconName: 'EyeOff' },
-  { id: 'blur', label: 'Blurry / Out of Focus', description: 'Motion blur, bad focus, or smudged lens', iconName: 'Aperture' },
-  { id: 'lighting', label: 'Dark / Overexposed', description: 'Too dark, glare, or extreme lens flare', iconName: 'SunDim' },
-  { id: 'obstruction', label: 'Obstructed / Dark Lens', description: 'Hand, car frame, drop, or dirt blocking camera', iconName: 'ShieldAlert' },
+  { id: 'bad_quality', label: 'Bad Quality', description: 'Blur, darkness, glare, obstruction, or other image quality issue', iconName: 'Aperture' },
   { id: 'orientation', label: 'Sideways / Upside Down', description: 'Incorrect camera angle or pitch', iconName: 'RotateCcw' },
-  { id: 'location', label: 'Incorrect Location / GPS', description: 'Bad positioning or teleported GPS point', iconName: 'MapPinOff' },
+  { id: 'copyright', label: 'Copyright Issue', description: 'Copyrighted content or trademark visible', iconName: 'ShieldAlert' },
   { id: 'other', label: 'Other Issue', description: 'Custom problem described in notes', iconName: 'HelpCircle' },
 ];
 
