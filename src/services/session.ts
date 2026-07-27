@@ -43,17 +43,24 @@ export async function bootstrapSession(): Promise<BootUser | null> {
   try {
     const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     const res = await fetch(`${base}/api/auth/me`, { credentials: 'same-origin' });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Server returned an error (401, 503 from SW when offline, etc.).
+      // If we still have a token + stored user from a previous online
+      // session, treat the session as still valid so the app boots into
+      // the review UI. The token will be re-validated against the server
+      // on the next online request.
+      if (getToken()) {
+        return getStoredUser();
+      }
+      return null;
+    }
     const data = await res.json();
     if (data.token) setToken(data.token);
     if (data.user) setStoredUser(data.user as BootUser);
     return data.user || null;
   } catch {
-    // Network failure (e.g. offline). If we still have a token + a previously
-    // stored user, treat the session as still valid so the app boots into the
-    // review UI instead of the login screen. The token will be re-validated
-    // against the server on the next online request; if it has expired the
-    // API call will 401 and the app can react then.
+    // Network failure (e.g. offline, no service worker). Same fallback: if
+    // we still have a token + stored user, treat the session as valid.
     if (getToken()) {
       return getStoredUser();
     }

@@ -169,14 +169,16 @@ export default function App() {
       } catch { /* offline or auth hiccup: offline prune is still in effect */ }
     }
 
-    // Settings + stats are best-effort; the cache is the source of truth for
-    // the queue, so a network failure here must NOT blank the stage.
-    fetchAppSettings()
-      .then((st) => {
+    // Settings MUST be awaited before any refill/prefetch/enforceLimit call,
+    // otherwise they run against the default cacheSize (10) and a subsequent
+    // enforceLimit(10) would evict the user's real cache down to 10 entries.
+    if (navigator.onLine) {
+      try {
+        const st = await fetchAppSettings();
         setSettings(st);
         cacheManager.setCellularSaver(st.cellularSaverMode || false);
-      })
-      .catch(() => { /* offline: keep defaults */ });
+      } catch { /* offline: keep defaults */ }
+    }
     loadStats();
 
     const cached = getCachedPictureQueue() || [];
@@ -226,9 +228,10 @@ export default function App() {
         const eligible = result.queue.filter((p) => !offlineReviewed.has(p.pictureId));
         if (eligible.length > 0) {
           mergeCachedPictureQueue(eligible);
-          await cacheManager.prefetchPictures(eligible, settings.cacheSize);
-          // Evict oldest entries so the on-disk cache never exceeds cacheSize.
-          await cacheManager.enforceLimit(settings.cacheSize);
+          // Prefetch + enforceLimit in the background: don't block the UI
+          // (and the queue state update below) on image downloads.
+          void cacheManager.prefetchPictures(eligible, settings.cacheSize)
+            .then(() => cacheManager.enforceLimit(settings.cacheSize));
         }
         const fresh = eligible.filter((p) => !actedThisSessionRef.current.has(p.pictureId));
         if (fresh.length > 0) {
